@@ -1,192 +1,214 @@
-import streamlit as st
 import pandas as pd
 import pdfplumber
 import re
-import io
 from datetime import datetime
+import openpyxl 
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+import os
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(page_title="Sistema Privado - Dr. Lagos", page_icon="⚖️", layout="wide")
+# --- CONFIGURACIÓN DINÁMICA 2026 ---
+def obtener_smmlv_actual():
+    anio_actual = datetime.now().year
+    # Valores oficiales Colombia
+    historico_smmlv = {
+        2024: 1300000,
+        2025: 1423500,
+        2026: 1750905 
+    }
+    return historico_smmlv.get(anio_actual, max(historico_smmlv.values()))
 
-# --- SISTEMA DE SEGURIDAD ---
-def check_password():
-    if "password_correct" not in st.session_state:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        col1, col2, col3 = st.columns([1,2,1])
-        with col2:
-            st.image("https://cdn-icons-png.flaticon.com/512/1048/1048953.png", width=100)
-            st.title("Acceso Restringido")
-            st.info("Sistema de Liquidación Pensional | Despacho Jurídico Lagos")
-            password = st.text_input("Ingrese la clave maestra:", type="password")
-            if st.button("Desbloquear Sistema"):
-                if password == "Lagos2026*":
-                    st.session_state["password_correct"] = True
-                    st.rerun()
-                else:
-                    st.error("❌ Clave incorrecta. Acceso denegado.")
-        return False
-    return True
+ARCHIVO_PDF = "historia_laboral.pdf"
+ARCHIVO_INTERMEDIO = "historia_en_excel.xlsx"
+ARCHIVO_SALIDA = "Liquidacion_Final_Pensional.xlsx"
+ARCHIVO_IPC = "ipc_colombia.csv"
 
-# --- INICIO DE LA APLICACIÓN ---
-if check_password():
+SMMLV_ACTUAL = obtener_smmlv_actual()
+MAX_SMMLV = 25 * SMMLV_ACTUAL 
+
+# Índices de Columnas (D=3, G=6, L=11)
+IDX_PERIODO = 3 
+IDX_SALARIO = 6 
+IDX_DIAS = 11   
+
+# --- EXTRACCIÓN DE METADATOS ---
+def extraer_metadatos_directos(ruta_pdf):
+    datos = {"Nombre": "No detectado", "Fecha Nacimiento": None, "Fecha Afiliacion": None, "Edad": 0}
+    if not os.path.exists(ruta_pdf): return datos
+    try:
+        texto_completo = ""
+        with pdfplumber.open(ruta_pdf) as pdf:
+            if len(pdf.pages) > 0:
+                texto_completo = pdf.pages[0].extract_text()
+        
+        match_nombre = re.search(r"Nombre:\s*\n?(.+?)(?=\n|Dirección:|Estado)", texto_completo, re.IGNORECASE)
+        if match_nombre:
+            nombre_sucio = match_nombre.group(1).strip()
+            datos["Nombre"] = re.sub(r"[^\w\sÑñ]", "", nombre_sucio).strip().upper()
+
+        regex_fecha = r"(\d{2}/\d{2}/\d{4})"
+        match_nac = re.search(r"Nacimiento:.*?" + regex_fecha, texto_completo, re.DOTALL)
+        if match_nac:
+            datos["Fecha Nacimiento"] = match_nac.group(1)
+            try:
+                fnac = datetime.strptime(match_nac.group(1), '%d/%m/%Y')
+                hoy = datetime.now()
+                datos["Edad"] = hoy.year - fnac.year - ((hoy.month, hoy.day) < (fnac.month, fnac.day))
+            except: pass
+
+        match_afil = re.search(r"Afiliación:.*?" + regex_fecha, texto_completo, re.DOTALL)
+        if match_afil: datos["Fecha Afiliacion"] = match_afil.group(1)
+    except: pass
+    return datos
+
+# --- PASO 1: CONVERTIR PDF A EXCEL (TABLAS) ---
+def actualizar_desde_pdf():
+    if not os.path.exists(ARCHIVO_PDF): return
+    try:
+        todas_las_filas = []
+        with pdfplumber.open(ARCHIVO_PDF) as pdf:
+            for pagina in pdf.pages:
+                tablas = pagina.extract_tables()
+                for tabla in tablas:
+                    for fila in tabla:
+                        fila_limpia = [str(c).replace('\n', ' ') if c else '' for c in fila]
+                        todas_las_filas.append(fila_limpia)
+        if todas_las_filas:
+            df = pd.DataFrame(todas_las_filas)
+            df.to_excel(ARCHIVO_INTERMEDIO, index=False, header=False)
+    except Exception as e:
+        print(f"❌ Error leyendo tablas: {e}")
+
+# --- FUNCIONES DE SOPORTE ---
+def cargar_ipc():
+    if not os.path.exists(ARCHIVO_IPC):
+        # Generar IPC base si no existe para evitar errores en GitHub
+        data = [{"anio": 2026, "mes": 1, "indice": 135.0}]
+        pd.DataFrame(data).to_csv(ARCHIVO_IPC, index=False)
+    return pd.read_csv(ARCHIVO_IPC)
+
+def obtener_ipc_mes(df_ipc, anio, mes):
+    fila = df_ipc[(df_ipc['anio'] == anio) & (df_ipc['mes'] == mes)]
+    return fila.iloc[0]['indice'] if not fila.empty else None
+
+def limpiar_numero(valor):
+    if pd.isna(valor): return 0
+    texto = re.sub(r'[^\d]', '', str(valor).split(',')[0].split('.')[0].strip())
+    try: return float(texto)
+    except: return 0
+
+def extraer_fecha_segura(texto_raw):
+    texto = str(texto_raw).strip()
+    m = re.search(r'(\d{4})[-/](\d{1,2})|(\d{1,2})/(\d{1,2})/(\d{4})', texto)
+    if m:
+        if m.group(1): return int(m.group(1)), int(m.group(2))
+        else: return int(m.group(5)), int(m.group(4))
+    return None, None
+
+def calcular_costo_independiente(ibc):
+    ibc = max(min(ibc, MAX_SMMLV), SMMLV_ACTUAL)
+    tasa = 0.16 # Tasa estándar pensión
+    sol = 0.01 if ibc >= 4*SMMLV_ACTUAL else 0.0
+    return ibc * (tasa + sol)
+
+# --- PROYECCIONES AUTOMÁTICAS (SOPORTE GITHUB) ---
+def generar_proyecciones_auto(ibl_actual, semanas_actuales, anios_extra=5):
+    try:
+        semanas_extra = anios_extra * 51.42
+        total_semanas_futuro = semanas_actuales + semanas_extra
+        
+        escenarios = [
+            {"tipo": "Conservador (+15%)", "factor": 1.15},
+            {"tipo": "Moderado (+30%)", "factor": 1.30},
+            {"tipo": "Agresivo (+50%)", "factor": 1.50}
+        ]
+        
+        data_proyeccion = []
+        for esc in escenarios:
+            nuevo_ibl = ibl_actual * esc["factor"]
+            s = nuevo_ibl / SMMLV_ACTUAL
+            tasa_base = 65.5 - (0.5 * s)
+            puntos = ((total_semanas_futuro - 1300)//50)*1.5 if total_semanas_futuro > 1300 else 0
+            tasa_f = max(min(tasa_base + puntos, 80.0), 55.0)
+            mesada_p = max(nuevo_ibl * (tasa_f/100), SMMLV_ACTUAL)
+            
+            costo = calcular_costo_independiente(nuevo_ibl)
+            
+            data_proyeccion.append({
+                "Escenario": esc["tipo"],
+                "Años Extra": anios_extra,
+                "Nuevo IBL": nuevo_ibl,
+                "Mesada Proyectada": mesada_p,
+                "Diferencia": mesada_p - (ibl_actual * 0.65), # Estimación diferencia
+                "Costo PILA Estimado": costo
+            })
+        return pd.DataFrame(data_proyeccion)
+    except: return None
+
+# --- LIQUIDACIÓN ---
+def liquidar():
+    actualizar_desde_pdf()
+    info_cliente = extraer_metadatos_directos(ARCHIVO_PDF)
     
-    # --- LÓGICA DE SALARIO MÍNIMO ---
-    def obtener_smmlv_automatico():
-        anio_actual = datetime.now().year
-        historico_smmlv = {
-            2024: 1300000,
-            2025: 1423500,
-            2026: 1750905  # VALOR OFICIAL 2026
-        }
-        return historico_smmlv.get(anio_actual, max(historico_smmlv.values()))
-
-    # --- ESTILOS ---
-    st.markdown("""
-    <style>
-        .main {background-color: #f8f9fa;}
-        .stMetric {background-color: white; padding: 15px; border-radius: 10px; border: 1px solid #dee2e6;}
-        .proyeccion-card {background-color: #e3f2fd; padding: 20px; border-radius: 10px; border-left: 5px solid #1976d2;}
-    </style>
-    """, unsafe_allow_html=True)
-
-    # --- FUNCIONES TÉCNICAS ---
-    @st.cache_data
-    def generar_tabla_ipc():
-        historico = {
-            1994: 15.02, 1995: 17.94, 1996: 21.83, 1997: 25.69, 1998: 30.01,
-            1999: 32.78, 2000: 35.65, 2001: 38.37, 2002: 41.05, 2003: 43.71,
-            2004: 46.11, 2005: 48.35, 2006: 50.51, 2007: 53.38, 2008: 57.47,
-            2009: 58.62, 2010: 60.48, 2011: 62.74, 2012: 64.27, 2013: 65.52,
-            2014: 67.92, 2015: 72.52, 2016: 76.69, 2017: 79.83, 2018: 82.37,
-            2019: 85.50, 2020: 86.88, 2021: 91.77, 2022: 103.84, 2023: 113.48,
-            2024: 121.00, 2025: 128.50, 2026: 135.00
-        }
+    try:
+        df_raw = pd.read_excel(ARCHIVO_INTERMEDIO, header=None)
+        df_ipc = cargar_ipc()
+        
         datos = []
-        anios = sorted(historico.keys())
-        for i in range(len(anios)-1):
-            a1, a2 = anios[i], anios[i+1]
-            v1, v2 = historico[a1], historico[a2]
-            delta = (v2 - v1) / 12
-            for mes in range(1, 13):
-                datos.append({"anio": a1 + 1, "mes": mes, "indice": v1 + (delta * mes)})
-        return pd.DataFrame(datos)
+        u_anio, u_mes = 0, 0
+        
+        for i, fila in df_raw.iterrows():
+            if len(fila) > IDX_DIAS:
+                anio, mes = extraer_fecha_segura(fila[IDX_PERIODO])
+                sal, dias = limpiar_numero(fila[IDX_SALARIO]), limpiar_numero(fila[IDX_DIAS])
+                if anio and mes and sal > 0:
+                    if anio > u_anio or (anio == u_anio and mes > u_mes):
+                        u_anio, u_mes = anio, mes
+                    
+                    ipc_ini = obtener_ipc_mes(df_ipc, anio, mes)
+                    if ipc_ini:
+                        datos.append({
+                            "Fecha": datetime(anio, mes, 1),
+                            "Periodo": f"{anio}-{mes:02d}",
+                            "Semanas": dias/7,
+                            "IBC": sal,
+                            "IPC_I": ipc_ini
+                        })
 
-    def limpiar_num(v):
-        if pd.isna(v): return 0
-        t = re.sub(r'[^\d-]', '', str(v).replace("$","").replace(".","").replace(",","").strip())
-        try: return float(t)
-        except: return 0
+        df_res = pd.DataFrame(datos).sort_values("Fecha")
+        ipc_f = obtener_ipc_mes(df_ipc, u_anio, u_mes) or df_ipc.iloc[-1]['indice']
+        df_res["IBL_Ind"] = df_res["IBC"] * (ipc_f / df_res["IPC_I"])
 
-    def extraer_fecha(t_raw):
-        t = str(t_raw).strip()
-        if "-" in t or "/" in t:
-            p = re.split(r'[-/]', t)
-            if len(p) >= 2:
-                try:
-                    v1, v2 = int(re.sub(r'\D','',p[0])), int(re.sub(r'\D','',p[1]))
-                    if v1 > 1900: return v1, v2
-                    elif v2 > 1900: return v2, v1
-                except: pass
-        return None, None
+        total_semanas = df_res["Semanas"].sum()
+        ibl_vida = df_res["IBL_Ind"].mean()
+        fecha_10y = datetime(u_anio, u_mes, 1).replace(year=u_anio-10)
+        ibl_10y = df_res[df_res["Fecha"] >= fecha_10y]["IBL_Ind"].mean()
+        ibl_final = max(ibl_vida, ibl_10y)
 
-    # --- INTERFAZ ---
-    st.title("⚖️ Liquidador Pensional Pro (Ley 797)")
-    st.sidebar.title("Panel de Control")
-    
-    archivo = st.sidebar.file_uploader("Cargar Historia Laboral (PDF)", type="pdf")
-    
-    smmlv_auto = obtener_smmlv_automatico()
-    smmlv_val = st.sidebar.number_input(f"SMMLV Vigente ({datetime.now().year})", value=smmlv_auto, step=1000)
+        s = ibl_final / SMMLV_ACTUAL
+        tasa = 65.5 - (0.5 * s)
+        pts = ((total_semanas - 1300)//50)*1.5 if total_semanas > 1300 else 0
+        tasa_f = max(min(tasa + pts, 80.0), 55.0 if total_semanas >= 1300 else 0)
+        mesada_hoy = max(ibl_final * (tasa_f/100), SMMLV_ACTUAL)
 
-    if archivo:
-        with st.spinner("Analizando documentos..."):
-            with pdfplumber.open(archivo) as pdf:
-                txt = pdf.pages[0].extract_text()
-                m_nom = re.search(r"Nombre:\s*\n?(.+?)(?=\n|Dirección:|Estado)", txt, re.IGNORECASE)
-                nombre = m_nom.group(1).strip().upper() if m_nom else "CONSULTA EXTERNA"
-            
-            archivo.seek(0)
-            filas = []
-            with pdfplumber.open(archivo) as pdf:
-                for p in pdf.pages:
-                    for t in p.extract_tables() or []:
-                        for f in t:
-                            filas.append([str(c).replace('\n', ' ') if c else '' for c in f])
-            
-            df_raw = pd.DataFrame(filas)
-            df_ipc = generar_tabla_ipc()
-            
-            data_pts = []
-            u_a, u_m = 0, 0
-            for i, row in df_raw.iterrows():
-                if len(row) > 11:
-                    a, m = extraer_fecha(row[3])
-                    if a and m:
-                        if a > u_a or (a==u_a and m>u_m): u_a, u_m = a, m
-                        sal, dias = limpiar_num(row[6]), limpiar_num(row[11])
-                        if dias > 0 and sal > 0:
-                            idx_i = df_ipc[(df_ipc['anio']==a)&(df_ipc['mes']==m)]['indice']
-                            if not idx_i.empty:
-                                data_pts.append({"Fecha": datetime(a,m,1), "Sem": dias/7, "IBC": sal, "IPC_I": idx_i.values[0]})
-            
-            if data_pts:
-                df = pd.DataFrame(data_pts)
-                ipc_f = df_ipc[(df_ipc['anio']==u_a)&(df_ipc['mes']==u_m)]['indice'].values[0] if u_a > 0 else df_ipc.iloc[-1]['indice']
-                df["IBL_I"] = df["IBC"] * (ipc_f / df["IPC_I"])
-                
-                tot_sem = df["Sem"].sum()
-                ibl_v = df["IBL_I"].mean()
-                f_10 = datetime(u_a, u_m, 1).replace(year=u_a-10)
-                ibl_10 = df[df["Fecha"] >= f_10]["IBL_I"].mean()
-                ibl_act = max(ibl_v, ibl_10)
-                
-                # Fórmulas de Ley
-                r0 = 65.5 - (0.5 * (ibl_act/smmlv_val))
-                puntos = ((tot_sem - 1300)//50)*1.5 if tot_sem > 1300 else 0
-                tasa_act = max(min(r0 + puntos, 80.0), 55.0 if tot_sem >= 1300 else 0)
-                mesada_act = max(ibl_act * (tasa_act/100), smmlv_val)
+        df_proy = generar_proyecciones_auto(ibl_final, total_semanas)
 
-                # DASHBOARD
-                st.subheader(f"👤 Cliente: {nombre}")
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Semanas", f"{tot_sem:,.1f}")
-                m2.metric("IBL Favorable", f"${ibl_act:,.0f}")
-                m3.metric("Tasa Reemplazo", f"{tasa_act:.1f}%")
-                m4.metric("Mesada Hoy", f"${mesada_act:,.0f}")
+        with pd.ExcelWriter(ARCHIVO_SALIDA, engine='openpyxl') as writer:
+            resumen = [
+                ("Nombre", info_cliente["Nombre"]),
+                ("Semanas Totales", round(total_semanas, 2)),
+                ("IBL Seleccionado", ibl_final),
+                ("Tasa Reemplazo", f"{tasa_f:.2f}%"),
+                ("MESADA ESTIMADA", mesada_hoy),
+                ("SMMLV 2026", SMMLV_ACTUAL)
+            ]
+            pd.DataFrame(resumen, columns=["Concepto", "Valor"]).to_excel(writer, sheet_name="1. Resumen", index=False)
+            if df_proy is not None: df_proy.to_excel(writer, sheet_name="2. Proyecciones", index=False)
+            df_res[["Periodo", "Semanas", "IBC", "IBL_Ind"]].to_excel(writer, sheet_name="3. Soporte", index=False)
 
-                st.divider()
+        print(f"✅ Proceso terminado exitosamente.")
 
-                # PROYECCIÓN
-                st.subheader("🚀 Simulador de Inversión Pensional")
-                c_p1, c_p2 = st.columns([1, 1.2])
-                with c_p1:
-                    anios_p = st.slider("Años a cotizar desde hoy:", 1, 15, 5)
-                    nuevo_ibc = st.number_input("IBC sugerido para aportes:", value=int(smmlv_val*3), step=100000)
-                
-                sem_p = tot_sem + (anios_p * 51.4)
-                ibl_p = ((ibl_act * tot_sem) + (nuevo_ibc * anios_p * 51.4)) / sem_p
-                r_p = 65.5 - (0.5 * (ibl_p/smmlv_val))
-                pts_p = ((sem_p - 1300)//50)*1.5 if sem_p > 1300 else 0
-                tasa_p = max(min(r_p + pts_p, 80.0), 55.0)
-                mesada_p = max(ibl_p * (tasa_p/100), smmlv_val)
-                ganancia = mesada_p - mesada_act
+    except Exception as e:
+        print(f"❌ Error: {e}")
 
-                with c_p2:
-                    st.markdown(f"""
-                    <div class="proyeccion-card">
-                        <h4 style="margin-top:0;">Resultado de la Estrategia</h4>
-                        <p>Semanas al finalizar: <b>{sem_p:,.1f}</b></p>
-                        <p>Nueva Mesada estimada: <b>${mesada_p:,.0f}</b></p>
-                        <p style="color:#1b5e20;">Aumento mensual: <b>+ ${ganancia:,.0f}</b></p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                st.info(f"💡 Para lograr este aumento, el aporte mensual estimado a pensión sería de ${(nuevo_ibc*0.16):,.0f}.")
-
-                # Exportación
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df.to_excel(writer, sheet_name="Detalle_Calculos", index=False)
-                st.sidebar.download_button("📥 Descargar Reporte Excel", buffer.getvalue(), f"Estudio_{nombre}.xlsx")
-    else:
-        st.info("🔓 Ingrese la clave y cargue la Historia Laboral PDF para iniciar.")
+if __name__ == "__main__":
+    liquidar()
