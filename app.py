@@ -5,20 +5,15 @@ import re
 import io
 from datetime import datetime
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(
-    page_title="Liquidador Pensional - Dr. Lagos",
-    page_icon="⚖️",
-    layout="wide"
-)
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Liquidador Pensional Pro - Dr. Lagos", page_icon="⚖️", layout="wide")
 
-# --- ESTILOS ---
+# --- ESTILOS PERSONALIZADOS ---
 st.markdown("""
 <style>
-    .main {background-color: #f4f6f9;}
-    h1 {color: #1f2c56; font-family: 'Arial';}
-    .stMetric {background-color: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);}
-    div[data-testid="stExpander"] {background-color: white; border-radius: 10px;}
+    .main {background-color: #f4f7f6;}
+    .stMetric {background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);}
+    .proyeccion-box {background-color: #e3f2fd; padding: 20px; border-radius: 10px; border-left: 5px solid #2196f3;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -44,7 +39,7 @@ def generar_tabla_ipc():
             datos.append({"anio": a1 + 1, "mes": mes, "indice": v1 + (delta * mes)})
     return pd.DataFrame(datos)
 
-# --- FUNCIONES DE APOYO ---
+# --- FUNCIONES TÉCNICAS ---
 def limpiar_numero(valor):
     if pd.isna(valor): return 0
     texto = re.sub(r'[^\d-]', '', str(valor).replace("$", "").replace(".", "").replace(",", "").strip())
@@ -72,134 +67,123 @@ def obtener_ipc(df_ipc, anio, mes):
     row = df_ipc[(df_ipc['anio'] == anio) & (df_ipc['mes'] == mes)]
     return row.iloc[0]['indice'] if not row.empty else None
 
-def extraer_metadatos_pdf(pdf_file):
-    datos = {"Nombre": "No detectado", "Edad": 0, "Nacimiento": "N/A"}
-    try:
-        with pdfplumber.open(pdf_file) as pdf:
-            txt = pdf.pages[0].extract_text()
-            m_nom = re.search(r"Nombre:\s*\n?(.+?)(?=\n|Dirección:|Estado)", txt, re.IGNORECASE)
-            if m_nom: datos["Nombre"] = re.sub(r"[^\w\sÑñ]", "", m_nom.group(1).strip().upper())
-            m_nac = re.search(r"(\d{2}/\d{2}/\d{4})", txt)
-            if m_nac:
-                datos["Nacimiento"] = m_nac.group(1)
-                fn = datetime.strptime(m_nac.group(1), '%d/%m/%Y')
-                hoy = datetime.now()
-                datos["Edad"] = hoy.year - fn.year - ((hoy.month, hoy.day) < (fn.month, fn.day))
-    except: pass
-    return datos
+def calcular_pila(ibc):
+    # Cálculo simplificado de aportes a pensión (16%) + Fondo Solidaridad
+    ibc = max(min(ibc, 1300000 * 25), 1300000)
+    tasa = 0.16
+    if ibc >= 1300000 * 4: tasa += 0.01 # Fondo Solidaridad
+    return ibc * tasa
 
-# --- INTERFAZ PRINCIPAL ---
-st.title("⚖️ Sistema de Liquidación Pensional Online")
-st.markdown("**Desarrollado para el Dr. David Lagos Riaño**")
-st.divider()
+# --- INTERFAZ ---
+st.title("⚖️ Liquidador Pensional Dr. Lagos")
+st.markdown("---")
 
-# Sidebar para carga de archivos
-with st.sidebar:
-    st.header("Configuración")
-    archivo = st.file_uploader("Subir Historia Laboral PDF", type="pdf")
-    st.info("Utilice el formato oficial de Colpensiones.")
+archivo = st.sidebar.file_uploader("Subir Historia Laboral PDF", type="pdf")
 
 if archivo:
-    with st.spinner("Procesando información..."):
-        # 1. Extraer datos personales
-        info = extraer_metadatos_pdf(archivo)
-        
-        # 2. Extraer tablas
+    with st.spinner("Procesando..."):
+        # Lógica de extracción (Resumida para brevedad)
+        with pdfplumber.open(archivo) as pdf:
+            txt = pdf.pages[0].extract_text()
+            m_nom = re.search(r"Nombre:\s*\n?(.+?)(?=\n|Dirección:|Estado)", txt, re.IGNORECASE)
+            nombre = re.sub(r"[^\w\sÑñ]", "", m_nom.group(1).strip().upper()) if m_nom else "Cliente"
+            
         archivo.seek(0)
         filas = []
         with pdfplumber.open(archivo) as pdf:
             for p in pdf.pages:
                 for t in p.extract_tables() or []:
-                    for f in t:
-                        filas.append([str(c).replace('\n', ' ') if c else '' for c in f])
+                    for f in t: filas.append([str(c).replace('\n', ' ') if c else '' for c in f])
         
         df_raw = pd.DataFrame(filas)
         df_ipc = generar_tabla_ipc()
-
-        # 3. Cálculos técnicos
-        datos_calc = []
-        ultimo_anio, ultimo_mes = 0, 0
-        SMMLV = 1300000
-
-        # Identificar fecha de corte
-        for i, row in df_raw.iterrows():
-            if len(row) > 3:
-                a, m = extraer_fecha_segura(row[3])
-                if a and m:
-                    if a > ultimo_anio or (a==ultimo_anio and m>ultimo_mes):
-                        ultimo_anio, ultimo_mes = a, m
         
-        ipc_final = obtener_ipc(df_ipc, ultimo_anio, ultimo_mes) or df_ipc.iloc[-1]['indice']
-
-        # Procesar periodos
+        datos = []
+        u_anio, u_mes = 0, 0
+        SMMLV = 1300000
+        
         for i, row in df_raw.iterrows():
             if len(row) > 11:
-                sal = limpiar_numero(row[6])
-                dias = limpiar_numero(row[11])
                 a, m = extraer_fecha_segura(row[3])
-                if a and m and dias > 0 and sal > 0:
-                    ipc_ini = obtener_ipc(df_ipc, a, m)
-                    if ipc_ini:
-                        datos_calc.append({
-                            "Fecha": datetime(a, m, 1),
-                            "Periodo": f"{a}-{m:02d}",
-                            "Semanas": dias/7,
-                            "IBC": sal,
-                            "Factor": ipc_final/ipc_ini,
-                            "IBL_Ind": sal * (ipc_final/ipc_ini)
-                        })
-
-        if datos_calc:
-            df_final = pd.DataFrame(datos_calc)
-            total_sem = df_final["Semanas"].sum()
-            ibl_vida = df_final["IBL_Ind"].mean()
+                if a and m:
+                    if a > u_anio or (a==u_anio and m>u_mes): u_anio, u_mes = a, m
+                    sal = limpiar_numero(row[6])
+                    dias = limpiar_numero(row[11])
+                    if dias > 0 and sal > 0:
+                        ipc_i = obtener_ipc(df_ipc, a, m)
+                        if ipc_i:
+                            datos.append({"Fecha": datetime(a, m, 1), "Sem": dias/7, "IBC": sal, "IPC_I": ipc_i})
+        
+        if datos:
+            df = pd.DataFrame(datos)
+            ipc_f = obtener_ipc(df_ipc, u_anio, u_mes) or df_ipc.iloc[-1]['indice']
+            df["IBL_I"] = df["IBC"] * (ipc_f / df["IPC_I"])
             
-            # IBL 10 años
-            f_limite = datetime(ultimo_anio, ultimo_mes, 1).replace(year=ultimo_anio-10)
-            df_10 = df_final[df_final["Fecha"] >= f_limite]
-            ibl_10 = df_10["IBL_Ind"].mean() if not df_10.empty else 0
+            total_sem = df["Sem"].sum()
+            ibl_vida = df["IBL_I"].mean()
+            f_10y = datetime(u_anio, u_mes, 1).replace(year=u_anio-10)
+            ibl_10 = df[df["Fecha"] >= f_10y]["IBL_I"].mean()
+            ibl_actual = max(ibl_vida, ibl_10)
             
-            ibl_favorable = max(ibl_vida, ibl_10)
-            
-            # Tasa de reemplazo
-            r = 65.5 - (0.5 * (ibl_favorable/SMMLV))
-            puntos = ((total_sem - 1300)//50)*1.5 if total_sem > 1300 else 0
-            tasa_final = max(min(r + puntos, 80.0), 55.0 if total_sem >= 1300 else 0)
-            mesada = max(ibl_favorable * (tasa_final/100), SMMLV)
+            # Tasa Reemplazo
+            r = 65.5 - (0.5 * (ibl_actual/SMMLV))
+            pts = ((total_sem - 1300)//50)*1.5 if total_sem > 1300 else 0
+            t_fin = max(min(r + pts, 80.0), 55.0 if total_sem >= 1300 else 0)
+            mesada_actual = max(ibl_actual * (t_fin/100), SMMLV)
 
             # --- VISTA DE RESULTADOS ---
-            st.success(f"Análisis realizado para: **{info['Nombre']}**")
+            st.subheader(f"📊 Situación Actual: {nombre}")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Semanas", f"{total_sem:,.1f}")
+            c2.metric("IBL Actual", f"${ibl_actual:,.0f}")
+            c3.metric("Tasa", f"{t_fin:.1f}%")
+            c4.metric("Mesada Hoy", f"${mesada_actual:,.0f}")
             
-            res1, res2, res3, res4 = st.columns(4)
-            res1.metric("Edad Actual", f"{info['Edad']} años")
-            res2.metric("Semanas Totales", f"{total_sem:,.1f}")
-            res3.metric("Tasa Reemplazo", f"{tasa_final:.2f}%")
-            res4.metric("Mesada Estimada", f"${mesada:,.0f}")
+            st.markdown("---")
+            
+            # --- MÓDULO DE PROYECCIÓN ---
+            st.subheader("🚀 Simulador de Mejora Pensional")
+            st.markdown("¿Qué pasa si decidimos invertir en los años que faltan?")
+            
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                anios_futuros = st.slider("Años adicionales a cotizar", 1, 15, 5)
+                ibc_proyectado = st.number_input("Nuevo IBC sugerido (Salario sobre el que aportará)", value=int(SMMLV*2), step=100000)
+            
+            # Cálculos de Proyección
+            sem_futuras = total_sem + (anios_futuros * 51.4)
+            # Nuevo IBL (Promedio ponderado simple)
+            ibl_proyectado = ((ibl_actual * total_sem) + (ibc_proyectado * anios_futuros * 51.4)) / sem_futuras
+            
+            # Nueva Tasa
+            r_p = 65.5 - (0.5 * (ibl_proyectado/SMMLV))
+            pts_p = ((sem_futuras - 1300)//50)*1.5 if sem_futuras > 1300 else 0
+            t_fin_p = max(min(r_p + pts_p, 80.0), 55.0)
+            mesada_proyectada = max(ibl_proyectado * (t_fin_p/100), SMMLV)
+            
+            incremento = mesada_proyectada - mesada_actual
+            costo_mensual = calcular_pila(ibc_proyectado)
+            
+            with col_p2:
+                st.markdown(f"""
+                <div class="proyeccion-box">
+                    <h4>Resultado de la Estrategia</h4>
+                    <p>Semanas al finalizar: <b>{sem_futuras:,.1f}</b></p>
+                    <p>Nueva Mesada estimada: <b>${mesada_proyectada:,.0f}</b></p>
+                    <p>Aumento mensual: <b style="color:green;">+ ${incremento:,.0f}</b></p>
+                    <hr>
+                    <p>Costo aporte mensual (PILA): <b>${costo_mensual:,.0f}</b></p>
+                </div>
+                """, unsafe_allow_html=True)
 
-            st.divider()
-            
-            col_izq, col_der = st.columns(2)
-            with col_izq:
-                st.subheader("Comparativa IBL")
-                st.write(f"**IBL Toda la vida:** ${ibl_vida:,.0f}")
-                st.write(f"**IBL Últimos 10 años:** ${ibl_10:,.0f}")
-                st.info(f"IBL más favorable: **${ibl_favorable:,.0f}**")
-            
-            with col_der:
-                st.subheader("Exportación")
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df_final.to_excel(writer, index=False, sheet_name="Soporte_Liquidacion")
-                st.download_button(
-                    label="📥 Descargar Soporte Excel",
-                    data=buffer.getvalue(),
-                    file_name=f"Liquidacion_{info['Nombre']}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            # Análisis de Retorno
+            st.info(f"💡 **Análisis del Dr. Lagos:** Al invertir ${costo_mensual:,.0f} mensuales, recuperará su inversión total en aproximadamente **{ ( (costo_mensual * anios_futuros * 12) / incremento ) / 12 :.1f} años** de disfrute pensional.")
 
-            with st.expander("Ver detalle de cotizaciones"):
-                st.dataframe(df_final.sort_values("Fecha", ascending=False))
-        else:
-            st.error("No se detectaron periodos de cotización válidos en el PDF.")
+            # Exportar a Excel
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name="Datos_Base", index=False)
+            st.download_button("📥 Descargar Soporte Técnico", buffer.getvalue(), f"Proyeccion_{nombre}.xlsx")
+
 else:
-    st.info("👈 Por favor, suba el archivo PDF en el panel lateral para comenzar.")
+    st.info("👈 Por favor, suba la Historia Laboral PDF para iniciar el análisis.")
