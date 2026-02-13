@@ -146,4 +146,4 @@ if archivo:
             col_p1, col_p2 = st.columns(2)
             with col_p1:
                 anios_futuros = st.slider("Años adicionales a cotizar", 1, 15, 5)
-                ibc_proyectado = st.number
+                ibc_proyectado = st.number_input("Nuevo IBC sugerido", value=int(SM
