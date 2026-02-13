@@ -8,7 +8,7 @@ from datetime import datetime
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Sistema Privado - Dr. Lagos", page_icon="⚖️", layout="wide")
 
-# --- SEGURIDAD ---
+# --- SISTEMA DE SEGURIDAD ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.markdown("<br><br>", unsafe_allow_html=True)
@@ -27,15 +27,16 @@ def check_password():
         return False
     return True
 
-# --- INICIO DE LA APP SI LA CLAVE ES CORRECTA ---
+# --- INICIO DE LA APLICACIÓN ---
 if check_password():
-    # --- LÓGICA DE SALARIO MÍNIMO ACTUALIZADA 2026 ---
+    
+    # --- LÓGICA DE SALARIO MÍNIMO ---
     def obtener_smmlv_automatico():
         anio_actual = datetime.now().year
         historico_smmlv = {
             2024: 1300000,
             2025: 1423500,
-            2026: 1750905  # VALOR OFICIAL SEGÚN DECRETO 1469/2025
+            2026: 1750905  # VALOR OFICIAL 2026
         }
         return historico_smmlv.get(anio_actual, max(historico_smmlv.values()))
 
@@ -88,32 +89,29 @@ if check_password():
                 except: pass
         return None, None
 
-    # --- INTERFAZ PRINCIPAL ---
+    # --- INTERFAZ ---
     st.title("⚖️ Liquidador Pensional Pro (Ley 797)")
     st.sidebar.title("Panel de Control")
     
     archivo = st.sidebar.file_uploader("Cargar Historia Laboral (PDF)", type="pdf")
     
     smmlv_auto = obtener_smmlv_automatico()
-    smmlv_val = st.sidebar.number_input(
-        f"SMMLV Vigente ({datetime.now().year})", 
-        value=smmlv_auto, 
-        step=1000
-    )
+    smmlv_val = st.sidebar.number_input(f"SMMLV Vigente ({datetime.now().year})", value=smmlv_auto, step=1000)
 
     if archivo:
         with st.spinner("Analizando documentos..."):
             with pdfplumber.open(archivo) as pdf:
                 txt = pdf.pages[0].extract_text()
                 m_nom = re.search(r"Nombre:\s*\n?(.+?)(?=\n|Dirección:|Estado)", txt, re.IGNORECASE)
-                nombre = m_nom.group(1).strip().upper() if m_nom else "CONSULTA"
+                nombre = m_nom.group(1).strip().upper() if m_nom else "CONSULTA EXTERNA"
             
             archivo.seek(0)
             filas = []
             with pdfplumber.open(archivo) as pdf:
                 for p in pdf.pages:
                     for t in p.extract_tables() or []:
-                        for f in t: filas.append([str(c).replace('\n', ' ') if c else '' for c in f])
+                        for f in t:
+                            filas.append([str(c).replace('\n', ' ') if c else '' for c in f])
             
             df_raw = pd.DataFrame(filas)
             df_ipc = generar_tabla_ipc()
@@ -142,7 +140,7 @@ if check_password():
                 ibl_10 = df[df["Fecha"] >= f_10]["IBL_I"].mean()
                 ibl_act = max(ibl_v, ibl_10)
                 
-                # Fórmulas
+                # Fórmulas de Ley
                 r0 = 65.5 - (0.5 * (ibl_act/smmlv_val))
                 puntos = ((tot_sem - 1300)//50)*1.5 if tot_sem > 1300 else 0
                 tasa_act = max(min(r0 + puntos, 80.0), 55.0 if tot_sem >= 1300 else 0)
@@ -152,11 +150,43 @@ if check_password():
                 st.subheader(f"👤 Cliente: {nombre}")
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Semanas", f"{tot_sem:,.1f}")
-                m2.metric("IBL Hoy", f"${ibl_act:,.0f}")
-                m3.metric("Tasa", f"{tasa_act:.1f}%")
+                m2.metric("IBL Favorable", f"${ibl_act:,.0f}")
+                m3.metric("Tasa Reemplazo", f"{tasa_act:.1f}%")
                 m4.metric("Mesada Hoy", f"${mesada_act:,.0f}")
 
                 st.divider()
 
                 # PROYECCIÓN
-                st.subheader("🚀 Simulador de Invers
+                st.subheader("🚀 Simulador de Inversión Pensional")
+                c_p1, c_p2 = st.columns([1, 1.2])
+                with c_p1:
+                    anios_p = st.slider("Años a cotizar desde hoy:", 1, 15, 5)
+                    nuevo_ibc = st.number_input("IBC sugerido para aportes:", value=int(smmlv_val*3), step=100000)
+                
+                sem_p = tot_sem + (anios_p * 51.4)
+                ibl_p = ((ibl_act * tot_sem) + (nuevo_ibc * anios_p * 51.4)) / sem_p
+                r_p = 65.5 - (0.5 * (ibl_p/smmlv_val))
+                pts_p = ((sem_p - 1300)//50)*1.5 if sem_p > 1300 else 0
+                tasa_p = max(min(r_p + pts_p, 80.0), 55.0)
+                mesada_p = max(ibl_p * (tasa_p/100), smmlv_val)
+                ganancia = mesada_p - mesada_act
+
+                with c_p2:
+                    st.markdown(f"""
+                    <div class="proyeccion-card">
+                        <h4 style="margin-top:0;">Resultado de la Estrategia</h4>
+                        <p>Semanas al finalizar: <b>{sem_p:,.1f}</b></p>
+                        <p>Nueva Mesada estimada: <b>${mesada_p:,.0f}</b></p>
+                        <p style="color:#1b5e20;">Aumento mensual: <b>+ ${ganancia:,.0f}</b></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                st.info(f"💡 Para lograr este aumento, el aporte mensual estimado a pensión sería de ${(nuevo_ibc*0.16):,.0f}.")
+
+                # Exportación
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df.to_excel(writer, sheet_name="Detalle_Calculos", index=False)
+                st.sidebar.download_button("📥 Descargar Reporte Excel", buffer.getvalue(), f"Estudio_{nombre}.xlsx")
+    else:
+        st.info("🔓 Ingrese la clave y cargue la Historia Laboral PDF para iniciar.")
