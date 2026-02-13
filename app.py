@@ -19,17 +19,28 @@ def check_password():
             st.info("Sistema de Liquidación Pensional | Despacho Jurídico Lagos")
             password = st.text_input("Ingrese la clave maestra:", type="password")
             if st.button("Desbloquear Sistema"):
-                if password == "Lagos2026*": # <--- CAMBIA TU CLAVE AQUÍ
+                if password == "Lagos2026*": # <--- TU CLAVE MAESTRA
                     st.session_state["password_correct"] = True
                     st.rerun()
                 else:
-                    st.error("❌ Clave incorrecta. Acceso denegado.")
+                    st.error("❌ Clave incorrecta.")
         return False
     return True
 
 # --- INICIO DE LA APLICACIÓN (SOLO SI HAY CLAVE) ---
 if check_password():
     
+    # --- LÓGICA DE SALARIO MÍNIMO AUTOMÁTICO ---
+    def obtener_smmlv_automatico():
+        anio_actual = datetime.now().year
+        # Base de datos de salarios mínimos
+        historico_smmlv = {
+            2024: 1300000,
+            2025: 1423500,
+            2026: 1530000  # Valor sugerido para el año actual
+        }
+        return historico_smmlv.get(anio_actual, max(historico_smmlv.values()))
+
     # --- ESTILOS ---
     st.markdown("""
     <style>
@@ -81,11 +92,18 @@ if check_password():
 
     # --- INTERFAZ PRINCIPAL ---
     st.title("⚖️ Liquidador Pensional Pro")
-    st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=80)
     st.sidebar.title("Panel de Control")
     
+    # Carga de archivos y SMMLV Automático
     archivo = st.sidebar.file_uploader("Cargar Historia Laboral (PDF)", type="pdf")
-    smmlv_val = st.sidebar.number_input("SMMLV Vigente", value=1300000)
+    
+    smmlv_auto = obtener_smmlv_automatico()
+    smmlv_val = st.sidebar.number_input(
+        f"SMMLV Vigente ({datetime.now().year})", 
+        value=smmlv_auto, 
+        step=1000,
+        help="Sugerido automáticamente según el año actual."
+    )
 
     if archivo:
         with st.spinner("Analizando documentos..."):
@@ -105,7 +123,6 @@ if check_password():
             df_raw = pd.DataFrame(filas)
             df_ipc = generar_tabla_ipc()
             
-            # Procesamiento de periodos
             data_pts = []
             u_a, u_m = 0, 0
             for i, row in df_raw.iterrows():
@@ -124,14 +141,13 @@ if check_password():
                 ipc_f = df_ipc[(df_ipc['anio']==u_a)&(df_ipc['mes']==u_m)]['indice'].values[0] if u_a > 0 else df_ipc.iloc[-1]['indice']
                 df["IBL_I"] = df["IBC"] * (ipc_f / df["IPC_I"])
                 
-                # Cálculos actuales
                 tot_sem = df["Sem"].sum()
                 ibl_v = df["IBL_I"].mean()
                 f_10 = datetime(u_a, u_m, 1).replace(year=u_a-10)
                 ibl_10 = df[df["Fecha"] >= f_10]["IBL_I"].mean()
                 ibl_act = max(ibl_v, ibl_10)
                 
-                # Tasa y Mesada
+                # Fórmulas Ley 797
                 r0 = 65.5 - (0.5 * (ibl_act/smmlv_val))
                 puntos = ((tot_sem - 1300)//50)*1.5 if tot_sem > 1300 else 0
                 tasa_act = max(min(r0 + puntos, 80.0), 55.0 if tot_sem >= 1300 else 0)
@@ -152,7 +168,6 @@ if check_password():
                 c_p1, c_p2 = st.columns([1, 1.2])
                 
                 with c_p1:
-                    st.write("**Simular Escenario Futuro**")
                     anios_plus = st.slider("Años a cotizar desde hoy:", 1, 15, 5)
                     nuevo_ibc = st.number_input("Cotizar sobre un IBC de:", value=int(smmlv_val*3), step=100000)
                 
@@ -171,11 +186,10 @@ if check_password():
                         <p>Semanas Finales: <b>{sem_p:,.1f}</b></p>
                         <p>Nueva Mesada: <b>${mesada_p:,.0f}</b></p>
                         <p>Incremento Mensual: <span style="color:#2e7d32; font-weight:bold;">+ ${ganancia:,.0f}</span></p>
-                        <p style="font-size:0.8em; color:#555;">Basado en Ley 797 de 2003</p>
                     </div>
                     """, unsafe_allow_html=True)
                 
-                st.info(f"💡 **Nota Técnica:** Para lograr este aumento, el cliente debe aportar mensualmente aprox. ${(nuevo_ibc*0.16):,.0f} a pensión.")
+                st.info(f"💡 **Costo de Inversión:** Para lograr este aumento, el aporte mensual estimado a pensión sería de ${(nuevo_ibc*0.16):,.0f}.")
 
                 # Exportación
                 buffer = io.BytesIO()
@@ -184,4 +198,4 @@ if check_password():
                 st.sidebar.download_button("📥 Descargar Reporte Excel", buffer.getvalue(), f"Estudio_{nombre}.xlsx")
 
     else:
-        st.info("Sistema listo. Cargue un PDF para iniciar el análisis privado.")
+        st.info("🔓 Sistema Protegido. Cargue una Historia Laboral para iniciar.")
