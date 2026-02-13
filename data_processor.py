@@ -2,25 +2,40 @@ import pdfplumber
 import pandas as pd
 import re
 
-def limpiar_moneda(valor):
-    """Convierte strings como '$ 1.500.000' a float"""
-    if isinstance(valor, str):
-        valor = valor.replace('$', '').replace('.', '').replace(',', '.').strip()
-        try:
-            return float(valor)
-        except:
-            return 0.0
-    return valor
+def limpiar_moneda(valor_str):
+    """
+    Convierte textos como '$ 1.500.000', '1.500.000', '$200.000.' a float.
+    Maneja el punto como separador de miles.
+    """
+    if not valor_str: return 0.0
+    # Quitar símbolos y puntos finales extraños que a veces trae el PDF
+    clean = valor_str.replace('$', '').replace(' ', '')
+    if clean.endswith('.'): clean = clean[:-1]
+    
+    # Eliminar puntos de miles
+    clean = clean.replace('.', '')
+    # Reemplazar coma decimal por punto (si existe)
+    clean = clean.replace(',', '.')
+    
+    try:
+        return float(clean)
+    except:
+        return 0.0
+
+def limpiar_semanas(valor_str):
+    """Convierte '4,29', '4.29' o '12,86' a float"""
+    if not valor_str: return 0.0
+    clean = valor_str.replace(',', '.')
+    try:
+        return float(clean)
+    except:
+        return 0.0
 
 def procesar_pdf_historia_laboral(archivo_pdf):
-    """
-    Lee el PDF y extrae las columnas [1], [2], [3], [4], [5], [9].
-    """
     datos = []
     
-    # Regex ajustado al formato visual de Colpensiones
-    # Busca patrones de fecha (AAAA-MM-DD o DD/MM/AAAA) para anclar la fila
-    # Asumimos que la fila tiene: Aportante | Fechas | Salario | Semanas
+    # Expresión regular para fechas formato DD/MM/AAAA
+    regex_fecha = r'(\d{2}/\d{2}/\d{4})'
     
     with pdfplumber.open(archivo_pdf) as pdf:
         for page in pdf.pages:
@@ -29,88 +44,103 @@ def procesar_pdf_historia_laboral(archivo_pdf):
             
             lines = text.split('\n')
             for line in lines:
-                # Filtrar encabezados y basura
-                if "Identificación" in line or "Historia Laboral" in line: continue
+                # 1. Buscar todas las fechas en la línea
+                fechas = re.findall(regex_fecha, line)
                 
-                parts = line.split()
-                if len(parts) < 5: continue
-                
-                # Intentamos identificar si la línea tiene fechas válidas
-                # Buscamos índices de fechas. Usualmente columna 3 y 4.
-                # Estrategia: Buscar dos fechas en la linea
-                try:
-                    # Encontrar elementos que parecen fechas
-                    fechas = [p for p in parts if re.match(r'\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4}', p)]
+                # Una línea válida de historia laboral debe tener al menos 2 fechas (Desde, Hasta)
+                if len(fechas) >= 2:
+                    fecha_desde = fechas[0]
+                    fecha_hasta = fechas[1]
                     
-                    if len(fechas) >= 2:
-                        fecha_desde = fechas[0]
-                        fecha_hasta = fechas[1]
+                    try:
+                        # --- ESTRATEGIA DE ANCLAJE ---
+                        # Dividimos la línea usando las fechas como separadores
                         
-                        # El salario suele estar después de las fechas
-                        # Las semanas suelen estar al final
-                        # Esta es una heurística; en producción se ajusta con coordenadas exactas (pdfplumber table)
+                        # Todo lo que está ANTES de la primera fecha es ID + Nombre
+                        parte_izquierda = line.split(fecha_desde)[0].strip()
                         
-                        # Extraer indices
-                        idx_desde = parts.index(fecha_desde)
+                        # Todo lo que está DESPUÉS de la segunda fecha son los valores (Salario, Semanas, etc.)
+                        # Usamos split por la segunda fecha y tomamos lo que sigue
+                        parte_derecha = line.split(fecha_hasta)[-1].strip()
                         
-                        # Nombre aportante es todo lo anterior a la fecha (aprox)
-                        aportante = " ".join(parts[:idx_desde])
-                        # Limpiar ID del aportante si viene pegado
+                        # --- PROCESAR NOMBRE (IZQUIERDA) ---
+                        # Generalmente es: "ID NOMBRE"
+                        # Intentamos separar el ID del nombre
+                        partes_nombre = parte_izquierda.split()
+                        if len(partes_nombre) > 1 and partes_nombre[0].isdigit():
+                            aportante = " ".join(partes_nombre[1:]) # Todo menos el primero
+                        else:
+                            aportante = parte_izquierda # Si no hay ID claro, tomar todo
+                            
+                        # --- PROCESAR VALORES (DERECHA) ---
+                        # La parte derecha suele verse así: "$ 1.500.000 4,29 0,00 0,00 4,29"
+                        # A veces los números están pegados o separados por espacios múltiples
+                        tokens = parte_derecha.split()
                         
-                        # Asumimos posición relativa para IBC y Semanas
-                        # Buscamos valores numéricos después de las fechas
-                        valores_numericos = []
-                        for x in parts[idx_desde+2:]:
-                            clean_x = x.replace('.', '').replace(',', '.')
-                            if re.match(r'^\d+(\.\d+)?$', clean_x):
-                                valores_numericos.append(x)
+                        ibc = 0.0
+                        semanas = 0.0
                         
-                        ibc = 0
-                        semanas = 0
-                        
-                        if len(valores_numericos) >= 2:
-                            ibc = limpiar_moneda(valores_numericos[0]) # Columna [5]
-                            # A veces hay columnas intermedias vacias o ceros
-                            semanas = float(valores_numericos[-1].replace(',', '.')) # Columna [9] usualmente la ultima
-                        
+                        if tokens:
+                            # El primer token suele ser el salario (Columna [5])
+                            # A veces el PDF pega el signo peso: $213.000
+                            raw_ibc = tokens[0]
+                            ibc = limpiar_moneda(raw_ibc)
+                            
+                            # El último token suele ser el total de semanas (Columna [9])
+                            # Ojo: A veces hay columnas vacías intermedias
+                            raw_semanas = tokens[-1]
+                            semanas = limpiar_semanas(raw_semanas)
+                            
+                            # VALIDACIÓN EXTRA:
+                            # Si semanas > 55 (imposible por mes/periodo), algo salió mal, quizás tomó otro número.
+                            # Si semanas es 0, intentar buscar el penúltimo token
+                            if semanas > 54 or semanas == 0:
+                                # Intento de rescate: buscar el valor numérico más razonable < 54
+                                for t in reversed(tokens):
+                                    v = limpiar_semanas(t)
+                                    if 0 < v < 54:
+                                        semanas = v
+                                        break
+
                         datos.append({
                             "Aportante": aportante,
-                            "Desde": fecha_desde,
-                            "Hasta": fecha_hasta,
+                            "Desde": pd.to_datetime(fecha_desde, dayfirst=True),
+                            "Hasta": pd.to_datetime(fecha_hasta, dayfirst=True),
                             "IBC": ibc,
-                            "Semanas": semanas
+                            "Semanas": semanas,
+                            "Origen": line # Guardamos la linea original por si acaso (debug)
                         })
-                except Exception as e:
-                    continue
+                        
+                    except Exception as e:
+                        # Si falla una línea, la saltamos pero no rompemos todo
+                        continue
 
     df = pd.DataFrame(datos)
     
-    # Normalización de fechas
-    df['Desde'] = pd.to_datetime(df['Desde'], errors='coerce')
-    df['Hasta'] = pd.to_datetime(df['Hasta'], errors='coerce')
-    df = df.dropna(subset=['Desde', 'Hasta'])
-    
+    # Limpieza final de datos nulos o fechas invalidas
+    if not df.empty:
+        df = df.dropna(subset=['Desde', 'Hasta'])
+        df = df[df['Semanas'] > 0] # Filtrar lineas que no sumaron semanas (info basura)
+        
     return df
 
 def aplicar_regla_simultaneidad(df):
     """
-    CRITICO: Si hay periodos superpuestos (mismo mes/año):
-    1. Se SUMAN los IBC (Salarios).
-    2. NO se suman las semanas (se toma la mayor o el tope de 4.28/mes).
+    Maneja periodos simultáneos agrupando por AÑO-MES.
+    Regla: Sumar IBC, Maximizar Semanas (no sumar semanas).
     """
     if df.empty: return df
     
-    # Crear columna Año-Mes para agrupar
+    # Crear columna Periodo para agrupar (YYYY-MM)
     df['Periodo'] = df['Desde'].dt.to_period('M')
     
-    # Agrupación
+    # Agrupar
     df_consolidado = df.groupby('Periodo').agg({
-        'IBC': 'sum',                # REGLA: Sumar bases de cotización
-        'Semanas': 'max',            # REGLA: No sumar tiempo, tomar el reporte principal
-        'Desde': 'min',
-        'Hasta': 'max',
-        'Aportante': lambda x: ' + '.join(x.unique()) # Rastro de simultaneidad
+        'IBC': 'sum',           # Se suman los salarios de todos los empleadores ese mes
+        'Semanas': 'max',       # Se toma el reporte de semanas más alto (usualmente 4.29)
+        'Desde': 'min',         # Inicio del periodo
+        'Hasta': 'max',         # Fin del periodo
+        'Aportante': lambda x: ' + '.join(set(x)) # Mostrar nombres unicos
     }).reset_index()
     
-    df_consolidado = df_consolidado.sort_values('Periodo')
-    return df_consolidado
+    return df_consolidado.sort_values('Periodo')
