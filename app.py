@@ -7,7 +7,7 @@ from datetime import datetime
 
 # --- CONFIGURACIÓN DE SEGURIDAD ---
 # Puedes cambiar esta clave por la que tú quieras
-CLAVE_MAESTRA = "Lagos2026*" 
+CLAVE_MAESTRA = Lagos2026 
 
 def check_password():
     """Retorna True si el usuario ingresó la clave correcta."""
