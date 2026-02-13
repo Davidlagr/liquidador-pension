@@ -82,7 +82,7 @@ archivo = st.sidebar.file_uploader("Subir Historia Laboral PDF", type="pdf")
 
 if archivo:
     with st.spinner("Procesando..."):
-        # Extracción inicial
+        # Lógica de extracción (Resumida para brevedad)
         with pdfplumber.open(archivo) as pdf:
             txt = pdf.pages[0].extract_text()
             m_nom = re.search(r"Nombre:\s*\n?(.+?)(?=\n|Dirección:|Estado)", txt, re.IGNORECASE)
@@ -141,9 +141,50 @@ if archivo:
             
             st.markdown("---")
             
-            # --- MÓDULO DE PROYECCIÓN MEJORADO ---
+            # --- MÓDULO DE PROYECCIÓN ---
             st.subheader("🚀 Simulador de Mejora Pensional")
+            st.markdown("¿Qué pasa si decidimos invertir en los años que faltan?")
+            
             col_p1, col_p2 = st.columns(2)
             with col_p1:
                 anios_futuros = st.slider("Años adicionales a cotizar", 1, 15, 5)
-                ibc_proyectado = st.number_input("Nuevo IBC sugerido", value=int(SMMLV
+                ibc_proyectado = st.number_input("Nuevo IBC sugerido (Salario sobre el que aportará)", value=int(SMMLV*2), step=100000)
+            
+            # Cálculos de Proyección
+            sem_futuras = total_sem + (anios_futuros * 51.4)
+            # Nuevo IBL (Promedio ponderado simple)
+            ibl_proyectado = ((ibl_actual * total_sem) + (ibc_proyectado * anios_futuros * 51.4)) / sem_futuras
+            
+            # Nueva Tasa
+            r_p = 65.5 - (0.5 * (ibl_proyectado/SMMLV))
+            pts_p = ((sem_futuras - 1300)//50)*1.5 if sem_futuras > 1300 else 0
+            t_fin_p = max(min(r_p + pts_p, 80.0), 55.0)
+            mesada_proyectada = max(ibl_proyectado * (t_fin_p/100), SMMLV)
+            
+            incremento = mesada_proyectada - mesada_actual
+            costo_mensual = calcular_pila(ibc_proyectado)
+            
+            with col_p2:
+                st.markdown(f"""
+                <div class="proyeccion-box">
+                    <h4>Resultado de la Estrategia</h4>
+                    <p>Semanas al finalizar: <b>{sem_futuras:,.1f}</b></p>
+                    <p>Nueva Mesada estimada: <b>${mesada_proyectada:,.0f}</b></p>
+                    <p>Aumento mensual: <b style="color:green;">+ ${incremento:,.0f}</b></p>
+                    <hr>
+                    <p>Costo aporte mensual (PILA): <b>${costo_mensual:,.0f}</b></p>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Análisis de Retorno
+            st.info(f"💡 **Análisis del Dr. Lagos:** Al invertir ${costo_mensual:,.0f} mensuales, recuperará su inversión total en aproximadamente **{ ( (costo_mensual * anios_futuros * 12) / incremento ) / 12 :.1f} años** de disfrute pensional.")
+
+            # Exportar a Excel
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name="Datos_Base", index=False)
+            st.download_button("📥 Descargar Soporte Técnico", buffer.getvalue(), f"Proyeccion_{nombre}.xlsx")
+
+else:
+    st.info("👈 Por favor, suba la Historia Laboral PDF para iniciar el análisis.")
+
