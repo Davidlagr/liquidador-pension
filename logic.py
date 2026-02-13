@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime
-from utils import obtener_valor_presente, obtener_semanas_requeridas_mujeres
+from datetime import datetime, date
+from utils import obtener_ipc_acumulado, calcular_semanas_minimas_mujeres
 
 class LiquidadorPension:
     def __init__(self, historia_laboral, genero, fecha_nacimiento):
@@ -10,75 +10,93 @@ class LiquidadorPension:
         self.fecha_nacimiento = pd.to_datetime(fecha_nacimiento)
         self.fecha_actual = datetime.now()
         
-    def calcular_ibl(self, metodo="toda_vida"):
+    def calcular_ibl_indexado(self, metodo="toda_vida", fecha_corte_proyeccion=None):
         """
-        Calcula el Ingreso Base de Liquidación indexado.
-        Metodos: 'toda_vida' o 'ultimos_10'.
+        Calcula el IBL actualizando cada salario con IPC.
+        metodo: 'toda_vida' o 'ultimos_10'.
+        fecha_corte_proyeccion: Para proyectar IPC a futuro si es necesario.
         """
         df_calc = self.df.copy()
+        fecha_final_calculo = fecha_corte_proyeccion if fecha_corte_proyeccion else self.fecha_actual
         
-        # Indexar salarios a fecha actual (IPC)
-        df_calc['IBC_Indexado'] = df_calc.apply(
-            lambda x: obtener_valor_presente(x['IBC'], x['Hasta'], self.fecha_actual), axis=1
-        )
+        # Actualización de IPC fila por fila
+        def indexar(row):
+            fecha_salario = row['Hasta']
+            if pd.isna(fecha_salario): return row['IBC']
+            
+            factor = obtener_ipc_acumulado(fecha_salario, fecha_final_calculo)
+            return row['IBC'] * factor
+
+        df_calc['IBC_Indexado'] = df_calc.apply(indexar, axis=1)
         
         if metodo == "ultimos_10":
-            # Filtrar últimos 10 años desde la última cotización o fecha actual
-            fecha_corte = df_calc['Hasta'].max() - pd.DateOffset(years=10)
-            df_calc = df_calc[df_calc['Hasta'] >= fecha_corte]
-            
+            # Filtrar los últimos 10 años de cotización real
+            fecha_max = df_calc['Hasta'].max()
+            fecha_limite = fecha_max - pd.DateOffset(years=10)
+            df_calc = df_calc[df_calc['Hasta'] >= fecha_limite]
+        
+        # Promedio aritmético simple del IBL indexado
+        if len(df_calc) == 0: return 0
         ibl = df_calc['IBC_Indexado'].mean()
         return ibl
 
-    def calcular_tasa_reemplazo_ley797(self, ibl, semanas_total):
+    def calcular_tasa_reemplazo_797(self, ibl, semanas, anio_pension):
         """
-        Fórmula decreciente Ley 797 de 2003:
-        r = 65.5 - 0.5 * s
+        Fórmula decreciente Ley 797/2003: r = 65.5 - 0.5/s
+        Ajuste automático de semanas mínimas para mujeres.
         """
-        # Validar salario mínimo vigente (simulado 1.3M)
-        smmlv = 1300000 
-        promedio_salarios = ibl / smmlv
+        smmlv_aprox = 1300000 # Debería ser parametrizable
+        if ibl == 0: return 0, 0
         
-        r = 65.5 - (0.5 * promedio_salarios)
+        r = 65.5 - (0.5 * (ibl / smmlv_aprox))
         
-        # Ajuste por semanas adicionales a las mínimas (1300)
-        # Por cada 50 semanas adicionales, suma 1.5%
-        semanas_minimas = 1300 # Ojo: ajustar si es mujer post-2026
-        
-        # Ajuste genero
+        # Determinar piso de semanas según género y año
+        semanas_base = 1300
         if self.genero == 'Femenino':
-            semanas_minimas = obtener_semanas_requeridas_mujeres(self.fecha_actual.year)
-
-        if semanas_total > semanas_minimas:
-            semanas_extra = (semanas_total - semanas_minimas) // 50
-            r += (semanas_extra * 1.5)
+            semanas_base = calcular_semanas_minimas_mujeres(anio_pension)
             
-        # Límites de ley
-        if r < 0: r = 0 # No puede ser negativo logicamente
-        if r > 80: r = 80
+        if semanas > semanas_base:
+            # +1.5% por cada 50 semanas adicionales
+            paquetes_50 = int((semanas - semanas_base) / 50)
+            r += (paquetes_50 * 1.5)
+            
+        # Topes de ley
+        r = max(r, 0)
+        r = min(r, 80) # Tope máximo 80%
         
-        monto = ibl * (r / 100)
-        return monto, r
+        mesada = ibl * (r / 100)
+        return mesada, r, semanas_base
 
-    def verificar_transicion(self):
+    def verificar_regimen_transicion(self):
         """
-        Verifica si cumple requisitos para régimen de transición.
-        (Lógica simplificada basada en edad a 2014 o 2003 según corresponda)
+        Estudio simple de transición. 
+        Requisito: 35 años (mujer) o 40 (hombre) o 15 años cotizados a 1 de abril de 1994.
         """
-        # Aquí iría la lógica de fechas estricta.
-        # Por ahora retornamos False para forzar Ley 797 en el ejemplo.
-        return False 
+        # Calcular edad a 1 de abril de 1994
+        fecha_limite = pd.Timestamp("1994-04-01")
+        edad_en_1994 = (fecha_limite - self.fecha_nacimiento).days / 365.25
+        
+        # Calcular semanas a 1994
+        semanas_a_1994 = self.df[self.df['Hasta'] <= fecha_limite]['Semanas'].sum()
+        
+        cumple_edad = (self.genero == "Femenino" and edad_en_1994 >= 35) or \
+                      (self.genero == "Masculino" and edad_en_1994 >= 40)
+        cumple_tiempo = semanas_a_1994 >= 750 # 15 años aprox
+        
+        return cumple_edad or cumple_tiempo
 
-    def simulacion_mejora(self, tipo_simulacion, valor_extra=0):
+    def calcular_decreto_758(self, ibl_promedio, semanas_total):
         """
-        tipo 1: Dependiente agrega cotización independiente.
-        tipo 2: Independiente aumenta su base.
+        Régimen de Transición (ISS):
+        Si tiene > 1000 semanas -> 75%
+        Si tiene > 1250 semanas -> +2% por cada 50 hasta max 90%
         """
-        df_simulado = self.df.copy()
-        
-        # Proyectar a futuro (simplificado: clonar ultimo año con nuevo valor)
-        ultimo_periodo = df_simulado.iloc[-1]
-        
-        nuevo_ibc = ultimo_periodo['IBC'] + valor_extra
-        
-        return nuevo_ibc # Retornamos el nuevo IBL proyectado (simplificado)
+        tasa = 0
+        if semanas_total >= 1000:
+            tasa = 75
+            if semanas_total > 1250:
+                extras = int((semanas_total - 1250) / 50)
+                tasa += (extras * 3) # Dec 758 da incrementos diferentes, simplificado a 3% aqui segun tabla
+                
+        tasa = min(tasa, 90) # Tope 90% en transición
+        return ibl_promedio * (tasa / 100), tasa
