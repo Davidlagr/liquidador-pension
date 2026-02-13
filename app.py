@@ -1,214 +1,141 @@
+import streamlit as st
 import pandas as pd
 import pdfplumber
 import re
+import io
 from datetime import datetime
-import openpyxl 
-from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-import os
 
-# --- CONFIGURACIÓN DINÁMICA 2026 ---
-def obtener_smmlv_actual():
-    anio_actual = datetime.now().year
-    # Valores oficiales Colombia
-    historico_smmlv = {
-        2024: 1300000,
-        2025: 1423500,
-        2026: 1750905 
-    }
-    return historico_smmlv.get(anio_actual, max(historico_smmlv.values()))
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Liquidador Dr. Lagos", page_icon="⚖️", layout="wide")
 
-ARCHIVO_PDF = "historia_laboral.pdf"
-ARCHIVO_INTERMEDIO = "historia_en_excel.xlsx"
-ARCHIVO_SALIDA = "Liquidacion_Final_Pensional.xlsx"
-ARCHIVO_IPC = "ipc_colombia.csv"
+# --- VALORES LEGALES 2026 ---
+SMMLV_2026 = 1750905
 
-SMMLV_ACTUAL = obtener_smmlv_actual()
-MAX_SMMLV = 25 * SMMLV_ACTUAL 
+# --- SEGURIDAD ---
+def check_password():
+    if "password_correct" not in st.session_state:
+        st.title("🔐 Acceso Privado - Despacho Lagos")
+        password = st.text_input("Ingrese la clave maestra:", type="password")
+        if st.button("Ingresar"):
+            if password == "Lagos2026*":
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("❌ Clave incorrecta")
+        return False
+    return True
 
-# Índices de Columnas (D=3, G=6, L=11)
-IDX_PERIODO = 3 
-IDX_SALARIO = 6 
-IDX_DIAS = 11   
-
-# --- EXTRACCIÓN DE METADATOS ---
-def extraer_metadatos_directos(ruta_pdf):
-    datos = {"Nombre": "No detectado", "Fecha Nacimiento": None, "Fecha Afiliacion": None, "Edad": 0}
-    if not os.path.exists(ruta_pdf): return datos
-    try:
-        texto_completo = ""
-        with pdfplumber.open(ruta_pdf) as pdf:
-            if len(pdf.pages) > 0:
-                texto_completo = pdf.pages[0].extract_text()
-        
-        match_nombre = re.search(r"Nombre:\s*\n?(.+?)(?=\n|Dirección:|Estado)", texto_completo, re.IGNORECASE)
-        if match_nombre:
-            nombre_sucio = match_nombre.group(1).strip()
-            datos["Nombre"] = re.sub(r"[^\w\sÑñ]", "", nombre_sucio).strip().upper()
-
-        regex_fecha = r"(\d{2}/\d{2}/\d{4})"
-        match_nac = re.search(r"Nacimiento:.*?" + regex_fecha, texto_completo, re.DOTALL)
-        if match_nac:
-            datos["Fecha Nacimiento"] = match_nac.group(1)
-            try:
-                fnac = datetime.strptime(match_nac.group(1), '%d/%m/%Y')
-                hoy = datetime.now()
-                datos["Edad"] = hoy.year - fnac.year - ((hoy.month, hoy.day) < (fnac.month, fnac.day))
-            except: pass
-
-        match_afil = re.search(r"Afiliación:.*?" + regex_fecha, texto_completo, re.DOTALL)
-        if match_afil: datos["Fecha Afiliacion"] = match_afil.group(1)
-    except: pass
-    return datos
-
-# --- PASO 1: CONVERTIR PDF A EXCEL (TABLAS) ---
-def actualizar_desde_pdf():
-    if not os.path.exists(ARCHIVO_PDF): return
-    try:
-        todas_las_filas = []
-        with pdfplumber.open(ARCHIVO_PDF) as pdf:
-            for pagina in pdf.pages:
-                tablas = pagina.extract_tables()
-                for tabla in tablas:
-                    for fila in tabla:
-                        fila_limpia = [str(c).replace('\n', ' ') if c else '' for c in fila]
-                        todas_las_filas.append(fila_limpia)
-        if todas_las_filas:
-            df = pd.DataFrame(todas_las_filas)
-            df.to_excel(ARCHIVO_INTERMEDIO, index=False, header=False)
-    except Exception as e:
-        print(f"❌ Error leyendo tablas: {e}")
-
-# --- FUNCIONES DE SOPORTE ---
-def cargar_ipc():
-    if not os.path.exists(ARCHIVO_IPC):
-        # Generar IPC base si no existe para evitar errores en GitHub
-        data = [{"anio": 2026, "mes": 1, "indice": 135.0}]
-        pd.DataFrame(data).to_csv(ARCHIVO_IPC, index=False)
-    return pd.read_csv(ARCHIVO_IPC)
-
-def obtener_ipc_mes(df_ipc, anio, mes):
-    fila = df_ipc[(df_ipc['anio'] == anio) & (df_ipc['mes'] == mes)]
-    return fila.iloc[0]['indice'] if not fila.empty else None
-
-def limpiar_numero(valor):
-    if pd.isna(valor): return 0
-    texto = re.sub(r'[^\d]', '', str(valor).split(',')[0].split('.')[0].strip())
-    try: return float(texto)
+# --- FUNCIONES DE LIMPIEZA ---
+def limpiar_num(v):
+    if pd.isna(v) or v == '': return 0
+    t = re.sub(r'[^\d]', '', str(v).split(',')[0].split('.')[0].strip())
+    try: return float(t)
     except: return 0
 
-def extraer_fecha_segura(texto_raw):
-    texto = str(texto_raw).strip()
-    m = re.search(r'(\d{4})[-/](\d{1,2})|(\d{1,2})/(\d{1,2})/(\d{4})', texto)
+def extraer_fecha(t_raw):
+    t = str(t_raw).strip()
+    m = re.search(r'(\d{4})[-/](\d{1,2})|(\d{1,2})/(\d{1,2})/(\d{4})', t)
     if m:
         if m.group(1): return int(m.group(1)), int(m.group(2))
         else: return int(m.group(5)), int(m.group(4))
     return None, None
 
-def calcular_costo_independiente(ibc):
-    ibc = max(min(ibc, MAX_SMMLV), SMMLV_ACTUAL)
-    tasa = 0.16 # Tasa estándar pensión
-    sol = 0.01 if ibc >= 4*SMMLV_ACTUAL else 0.0
-    return ibc * (tasa + sol)
-
-# --- PROYECCIONES AUTOMÁTICAS (SOPORTE GITHUB) ---
-def generar_proyecciones_auto(ibl_actual, semanas_actuales, anios_extra=5):
-    try:
-        semanas_extra = anios_extra * 51.42
-        total_semanas_futuro = semanas_actuales + semanas_extra
-        
-        escenarios = [
-            {"tipo": "Conservador (+15%)", "factor": 1.15},
-            {"tipo": "Moderado (+30%)", "factor": 1.30},
-            {"tipo": "Agresivo (+50%)", "factor": 1.50}
-        ]
-        
-        data_proyeccion = []
-        for esc in escenarios:
-            nuevo_ibl = ibl_actual * esc["factor"]
-            s = nuevo_ibl / SMMLV_ACTUAL
-            tasa_base = 65.5 - (0.5 * s)
-            puntos = ((total_semanas_futuro - 1300)//50)*1.5 if total_semanas_futuro > 1300 else 0
-            tasa_f = max(min(tasa_base + puntos, 80.0), 55.0)
-            mesada_p = max(nuevo_ibl * (tasa_f/100), SMMLV_ACTUAL)
-            
-            costo = calcular_costo_independiente(nuevo_ibl)
-            
-            data_proyeccion.append({
-                "Escenario": esc["tipo"],
-                "Años Extra": anios_extra,
-                "Nuevo IBL": nuevo_ibl,
-                "Mesada Proyectada": mesada_p,
-                "Diferencia": mesada_p - (ibl_actual * 0.65), # Estimación diferencia
-                "Costo PILA Estimado": costo
-            })
-        return pd.DataFrame(data_proyeccion)
-    except: return None
-
-# --- LIQUIDACIÓN ---
-def liquidar():
-    actualizar_desde_pdf()
-    info_cliente = extraer_metadatos_directos(ARCHIVO_PDF)
+# --- APLICACIÓN PRINCIPAL ---
+if check_password():
+    st.title("⚖️ Sistema de Liquidación Pensional Pro")
+    st.sidebar.header("Configuración")
     
-    try:
-        df_raw = pd.read_excel(ARCHIVO_INTERMEDIO, header=None)
-        df_ipc = cargar_ipc()
-        
-        datos = []
-        u_anio, u_mes = 0, 0
-        
-        for i, fila in df_raw.iterrows():
-            if len(fila) > IDX_DIAS:
-                anio, mes = extraer_fecha_segura(fila[IDX_PERIODO])
-                sal, dias = limpiar_numero(fila[IDX_SALARIO]), limpiar_numero(fila[IDX_DIAS])
-                if anio and mes and sal > 0:
-                    if anio > u_anio or (anio == u_anio and mes > u_mes):
-                        u_anio, u_mes = anio, mes
-                    
-                    ipc_ini = obtener_ipc_mes(df_ipc, anio, mes)
-                    if ipc_ini:
-                        datos.append({
-                            "Fecha": datetime(anio, mes, 1),
-                            "Periodo": f"{anio}-{mes:02d}",
-                            "Semanas": dias/7,
-                            "IBC": sal,
-                            "IPC_I": ipc_ini
-                        })
+    archivo_subido = st.sidebar.file_uploader("Subir Historia Laboral (PDF)", type="pdf")
 
-        df_res = pd.DataFrame(datos).sort_values("Fecha")
-        ipc_f = obtener_ipc_mes(df_ipc, u_anio, u_mes) or df_ipc.iloc[-1]['indice']
-        df_res["IBL_Ind"] = df_res["IBC"] * (ipc_f / df_res["IPC_I"])
+    if archivo_subido:
+        with st.spinner("Procesando datos..."):
+            datos_puros = []
+            nombre_cliente = "No detectado"
+            
+            # PROCESAMIENTO DIRECTO DESDE MEMORIA
+            with pdfplumber.open(archivo_subido) as pdf:
+                # Extraer nombre
+                texto_p1 = pdf.pages[0].extract_text() or ""
+                m_nom = re.search(r"Nombre:\s*\n?(.+?)(?=\n|Dirección:|Estado)", texto_p1, re.IGNORECASE)
+                if m_nom: nombre_cliente = m_nom.group(1).strip().upper()
 
-        total_semanas = df_res["Semanas"].sum()
-        ibl_vida = df_res["IBL_Ind"].mean()
-        fecha_10y = datetime(u_anio, u_mes, 1).replace(year=u_anio-10)
-        ibl_10y = df_res[df_res["Fecha"] >= fecha_10y]["IBL_Ind"].mean()
-        ibl_final = max(ibl_vida, ibl_10y)
+                # Extraer tablas de todas las páginas
+                for pagina in pdf.pages:
+                    tablas = pagina.extract_tables()
+                    for tabla in tablas:
+                        for fila in tabla:
+                            if len(fila) > 11: # Asegurar que tiene las columnas necesarias
+                                anio, mes = extraer_fecha(fila[3]) # IDX 3
+                                ibc = limpiar_num(fila[6])         # IDX 6
+                                dias = limpiar_num(fila[11])       # IDX 11
+                                
+                                if anio and mes and ibc > 0:
+                                    datos_puros.append({
+                                        "Fecha": datetime(anio, mes, 1),
+                                        "Periodo": f"{anio}-{mes:02d}",
+                                        "Semanas": dias / 7,
+                                        "IBC": ibc
+                                    })
 
-        s = ibl_final / SMMLV_ACTUAL
-        tasa = 65.5 - (0.5 * s)
-        pts = ((total_semanas - 1300)//50)*1.5 if total_semanas > 1300 else 0
-        tasa_f = max(min(tasa + pts, 80.0), 55.0 if total_semanas >= 1300 else 0)
-        mesada_hoy = max(ibl_final * (tasa_f/100), SMMLV_ACTUAL)
+            if not datos_puros:
+                st.error("❌ No se detectaron datos válidos en las columnas 3, 6 y 11.")
+            else:
+                df = pd.DataFrame(datos_puros).sort_values("Fecha")
+                
+                # --- CÁLCULOS ---
+                u_f = df["Fecha"].max()
+                total_sem = df["Semanas"].sum()
+                ibl_vida = df["IBC"].mean()
+                
+                f_10y = u_f.replace(year=u_f.year - 10)
+                ibl_10y = df[df["Fecha"] >= f_10y]["IBC"].mean()
+                ibl_final = max(ibl_vida, ibl_10y)
+                
+                s = ibl_final / SMMLV_2026
+                tasa_base = 65.5 - (0.5 * s)
+                pts = ((total_sem - 1300)//50)*1.5 if total_sem > 1300 else 0
+                tasa_f = max(min(tasa_base + pts, 80.0), 55.0 if total_sem >= 1300 else 0)
+                mesada = max(ibl_final * (tasa_f/100), SMMLV_2026)
 
-        df_proy = generar_proyecciones_auto(ibl_final, total_semanas)
+                # --- INTERFAZ DE RESULTADOS ---
+                st.subheader(f"👤 Cliente: {nombre_cliente}")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Semanas Totales", f"{total_sem:,.2f}")
+                c2.metric("IBL Seleccionado", f"${ibl_final:,.0f}")
+                c3.metric("Tasa Reemplazo", f"{tasa_f:.2f}%")
+                c4.metric("Mesada Estimada", f"${mesada:,.0f}")
 
-        with pd.ExcelWriter(ARCHIVO_SALIDA, engine='openpyxl') as writer:
-            resumen = [
-                ("Nombre", info_cliente["Nombre"]),
-                ("Semanas Totales", round(total_semanas, 2)),
-                ("IBL Seleccionado", ibl_final),
-                ("Tasa Reemplazo", f"{tasa_f:.2f}%"),
-                ("MESADA ESTIMADA", mesada_hoy),
-                ("SMMLV 2026", SMMLV_ACTUAL)
-            ]
-            pd.DataFrame(resumen, columns=["Concepto", "Valor"]).to_excel(writer, sheet_name="1. Resumen", index=False)
-            if df_proy is not None: df_proy.to_excel(writer, sheet_name="2. Proyecciones", index=False)
-            df_res[["Periodo", "Semanas", "IBC", "IBL_Ind"]].to_excel(writer, sheet_name="3. Soporte", index=False)
+                st.divider()
 
-        print(f"✅ Proceso terminado exitosamente.")
+                # --- PROYECCIONES AUTOMÁTICAS ---
+                st.subheader("📈 Escenarios de Mejora (A 5 años)")
+                data_proy = []
+                for pct in [0.15, 0.30, 0.50]:
+                    ibl_p = ibl_final * (1 + pct)
+                    sem_p = total_sem + (5 * 51.42)
+                    r_p = 65.5 - (0.5 * (ibl_p / SMMLV_2026))
+                    pts_p = ((sem_p - 1300)//50)*1.5 if sem_p > 1300 else 0
+                    tasa_p = max(min(r_p + pts_p, 80.0), 55.0)
+                    m_p = max(ibl_p * (tasa_p/100), SMMLV_2026)
+                    data_proy.append({
+                        "Incremento": f"+{int(pct*100)}%",
+                        "Nuevo IBL": f"${ibl_p:,.0f}",
+                        "Semanas Futuras": round(sem_p, 1),
+                        "Mesada Proyectada": f"${m_p:,.0f}",
+                        "Ganancia Mensual": f"${(m_p - mesada):,.0f}"
+                    })
+                st.table(data_proy)
 
-    except Exception as e:
-        print(f"❌ Error: {e}")
-
-if __name__ == "__main__":
-    liquidar()
+                # --- EXPORTACIÓN ---
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    # Libro 1
+                    res_df = pd.DataFrame([
+                        ("Nombre", nombre_cliente), ("Semanas", total_sem), 
+                        ("IBL Final", ibl_final), ("Mesada", mesada)
+                    ], columns=["Concepto", "Valor"])
+                    res_df.to_excel(writer, sheet_name="Liquidacion", index=False)
+                    # Libro 2
+                    pd.DataFrame(data_proy).to_excel(writer, sheet_name="Proyecciones", index=False)
+                    # Libro 3
+                    df.to_excel(writer, sheet_name="Soporte
