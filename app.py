@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
 from datetime import date, datetime
 from data_processor import procesar_pdf_historia_laboral, aplicar_regla_simultaneidad
 from logic import LiquidadorPension
@@ -21,7 +20,7 @@ with st.sidebar:
     st.header("Datos del Afiliado")
     nombre = st.text_input("Nombre", "Afiliado")
     identificacion = st.text_input("Identificación")
-    fecha_nacimiento = st.date_input("Nacimiento", value=date(1961, 6, 21)) # Fecha ajustada a tu ejemplo
+    fecha_nacimiento = st.date_input("Nacimiento", value=date(1970, 1, 1))
     genero = st.radio("Género", ["Masculino", "Femenino"])
 
 # --- CARGA Y VISUALIZACIÓN ---
@@ -29,28 +28,47 @@ st.subheader("1. Carga y Validación de Historia Laboral")
 uploaded_file = st.file_uploader("Sube tu Historia Laboral (PDF)", type="pdf")
 
 if uploaded_file:
-    # Procesar
-    with st.spinner('Procesando datos y separando periodos fusionados...'):
+    with st.spinner('Procesando datos...'):
         df_raw = procesar_pdf_historia_laboral(uploaded_file)
+        
+        # --- BLOQUE DE SEGURIDAD ANTI-ERROR ---
+        if df_raw.empty:
+            st.error("⚠️ No se pudieron extraer datos válidos del PDF. Por favor verifica que el archivo no esté encriptado o sea una imagen escaneada.")
+            st.stop() # Detiene la app aquí para no causar el AttributeError
+        # --------------------------------------
+
         df_final = aplicar_regla_simultaneidad(df_raw)
     
     total_semanas = df_final['Semanas'].sum()
     
-    # --- BLOQUE DE VALIDACIÓN DE DATOS ---
+    # --- MÉTRICAS (Ahora seguras porque sabemos que df_final tiene datos) ---
     c1, c2, c3 = st.columns(3)
     c1.metric("Total Semanas", f"{total_semanas:,.2f}")
     c2.metric("Periodos Consolidados", len(df_final))
-    c3.metric("Rango Fechas", f"{df_final['Desde'].dt.year.min()} - {df_final['Hasta'].dt.year.max()}")
     
-    # VISUALIZACIÓN DE LA TABLA (Lo que pediste)
+    # Cálculo seguro de fechas
+    min_fecha = df_final['Desde'].min()
+    max_fecha = df_final['Hasta'].max()
+    
+    # Validar que no sean NaT (Not a Time)
+    if pd.notnull(min_fecha) and pd.notnull(max_fecha):
+        rango = f"{min_fecha.year} - {max_fecha.year}"
+    else:
+        rango = "N/A"
+        
+    c3.metric("Rango Fechas", rango)
+    
+    # VISUALIZACIÓN TABLA
     st.markdown("### 📋 Detalle de Historia Laboral Procesada")
     st.dataframe(
         df_final[['Periodo', 'Desde', 'Hasta', 'Semanas', 'IBC', 'Aportante']].style.format({
             "IBC": "${:,.0f}",
-            "Semanas": "{:.2f}"
+            "Semanas": "{:.2f}",
+            "Desde": "{:%d-%m-%Y}",
+            "Hasta": "{:%d-%m-%Y}"
         }),
         use_container_width=True,
-        height=300 # Altura fija con scroll
+        height=300
     )
 
     # --- LÓGICA DE ESTUDIO ---
@@ -62,13 +80,11 @@ if uploaded_file:
     tipo = st.radio("Selecciona Análisis:", ["Estudio Pensional (Ley 797 vs Transición)", "Proyección Futura"], horizontal=True)
 
     if tipo.startswith("Estudio"):
-        # Cálculos
         ibl_10, detalle_10 = liquidador.calcular_ibl_indexado("ultimos_10")
         ibl_vida, detalle_vida = liquidador.calcular_ibl_indexado("toda_vida")
         
         col_res1, col_res2 = st.columns(2)
         
-        # Gráfica IBL
         with col_res1:
             st.markdown("##### Comparativo IBL (Ingreso Base)")
             chart_data = pd.DataFrame({'IBL': [ibl_10, ibl_vida]}, index=['Últimos 10 Años', 'Toda la Vida'])
@@ -80,12 +96,11 @@ if uploaded_file:
             st.info(f"💡 IBL Favorable: **{origen}**")
             st.metric("Monto IBL", f"${ibl_favorable:,.0f}")
             
-            # Detalle desplegable del IBL
             with st.expander("Ver tabla de indexación (IPC)"):
                 detalle_mostrar = detalle_10 if ibl_10 >= ibl_vida else detalle_vida
-                st.dataframe(detalle_mostrar)
+                if not detalle_mostrar.empty:
+                    st.dataframe(detalle_mostrar)
 
-        # Cálculo Mesada
         mesada, tasa, info = liquidador.calcular_tasa_reemplazo_797(ibl_favorable, total_semanas, datetime.now().year)
         
         st.markdown("---")
@@ -97,5 +112,5 @@ if uploaded_file:
             st.write(f"**Total:** {tasa:.2f}%")
 
     elif tipo.startswith("Proy"):
-        st.info("Módulo de proyección disponible. Selecciona opciones arriba.")
-        # Aquí puedes conectar la lógica de proyección si la necesitas en esta vista
+        st.info("Módulo de proyección disponible.")
+        # Lógica de proyección aquí...
