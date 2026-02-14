@@ -4,28 +4,36 @@ import re
 
 def limpiar_moneda(valor_str):
     """
-    Convierte textos como '$ 1.500.000', '1.500.000', '$200.000.' a float.
-    Maneja el punto como separador de miles.
+    Convierte textos financieros a float, manejando formatos mixtos (. o ,).
+    Ej: '$ 1.253.156' -> 1253156.0
+    Ej: '400.000' -> 400000.0
     """
-    if not valor_str: return 0.0
-    # Quitar símbolos y puntos finales extraños que a veces trae el PDF
-    clean = valor_str.replace('$', '').replace(' ', '')
-    if clean.endswith('.'): clean = clean[:-1]
-    
-    # Eliminar puntos de miles
+    if not isinstance(valor_str, str): return 0.0
+    clean = valor_str.replace('$', '').strip()
+    # Eliminar puntos de miles (asumiendo formato col: 1.000.000)
     clean = clean.replace('.', '')
-    # Reemplazar coma decimal por punto (si existe)
+    # Reemplazar coma decimal
     clean = clean.replace(',', '.')
-    
     try:
         return float(clean)
     except:
         return 0.0
 
 def limpiar_semanas(valor_str):
-    """Convierte '4,29', '4.29' o '12,86' a float"""
-    if not valor_str: return 0.0
-    clean = valor_str.replace(',', '.')
+    """
+    Maneja la ambigüedad de decimales en semanas (124.29 vs 4,29).
+    """
+    if not isinstance(valor_str, str): return 0.0
+    clean = valor_str.strip()
+    
+    # Caso 1: Formato con coma (4,29) -> Estándar Colombia
+    if ',' in clean:
+        clean = clean.replace('.', '') # Quitar puntos miles si los hubiera
+        clean = clean.replace(',', '.') # Coma a punto
+    # Caso 2: Formato con punto (124.29) -> Estándar US/PDF antiguo
+    # Si tiene punto y son 2 decimales, es decimal.
+    # Si tiene punto y son 3 decimales (ej 1.000), es mil (pero raro en semanas)
+    
     try:
         return float(clean)
     except:
@@ -34,113 +42,110 @@ def limpiar_semanas(valor_str):
 def procesar_pdf_historia_laboral(archivo_pdf):
     datos = []
     
-    # Expresión regular para fechas formato DD/MM/AAAA
-    regex_fecha = r'(\d{2}/\d{2}/\d{4})'
-    
+    # Expresión regular para capturar la estructura "CSV" oculta en el PDF
+    # Captura 8 grupos entre comillas separados por comas
+    regex_csv_row = re.compile(r'"(.*?)","(.*?)","(.*?)","(.*?)","(.*?)","(.*?)","(.*?)","(.*?)"', re.DOTALL)
+
     with pdfplumber.open(archivo_pdf) as pdf:
         for page in pdf.pages:
             text = page.extract_text()
             if not text: continue
-            
-            lines = text.split('\n')
-            for line in lines:
-                # 1. Buscar todas las fechas en la línea
-                fechas = re.findall(regex_fecha, line)
-                
-                # Una línea válida de historia laboral debe tener al menos 2 fechas (Desde, Hasta)
-                if len(fechas) >= 2:
-                    fecha_desde = fechas[0]
-                    fecha_hasta = fechas[1]
-                    
-                    try:
-                        # --- ESTRATEGIA DE ANCLAJE ---
-                        # Dividimos la línea usando las fechas como separadores
-                        
-                        # Todo lo que está ANTES de la primera fecha es ID + Nombre
-                        parte_izquierda = line.split(fecha_desde)[0].strip()
-                        
-                        # Todo lo que está DESPUÉS de la segunda fecha son los valores (Salario, Semanas, etc.)
-                        # Usamos split por la segunda fecha y tomamos lo que sigue
-                        parte_derecha = line.split(fecha_hasta)[-1].strip()
-                        
-                        # --- PROCESAR NOMBRE (IZQUIERDA) ---
-                        # Generalmente es: "ID NOMBRE"
-                        # Intentamos separar el ID del nombre
-                        partes_nombre = parte_izquierda.split()
-                        if len(partes_nombre) > 1 and partes_nombre[0].isdigit():
-                            aportante = " ".join(partes_nombre[1:]) # Todo menos el primero
-                        else:
-                            aportante = parte_izquierda # Si no hay ID claro, tomar todo
-                            
-                        # --- PROCESAR VALORES (DERECHA) ---
-                        # La parte derecha suele verse así: "$ 1.500.000 4,29 0,00 0,00 4,29"
-                        # A veces los números están pegados o separados por espacios múltiples
-                        tokens = parte_derecha.split()
-                        
-                        ibc = 0.0
-                        semanas = 0.0
-                        
-                        if tokens:
-                            # El primer token suele ser el salario (Columna [5])
-                            # A veces el PDF pega el signo peso: $213.000
-                            raw_ibc = tokens[0]
-                            ibc = limpiar_moneda(raw_ibc)
-                            
-                            # El último token suele ser el total de semanas (Columna [9])
-                            # Ojo: A veces hay columnas vacías intermedias
-                            raw_semanas = tokens[-1]
-                            semanas = limpiar_semanas(raw_semanas)
-                            
-                            # VALIDACIÓN EXTRA:
-                            # Si semanas > 55 (imposible por mes/periodo), algo salió mal, quizás tomó otro número.
-                            # Si semanas es 0, intentar buscar el penúltimo token
-                            if semanas > 54 or semanas == 0:
-                                # Intento de rescate: buscar el valor numérico más razonable < 54
-                                for t in reversed(tokens):
-                                    v = limpiar_semanas(t)
-                                    if 0 < v < 54:
-                                        semanas = v
-                                        break
 
+            # Buscamos todas las coincidencias del patrón CSV
+            matches = regex_csv_row.findall(text)
+            
+            for match in matches:
+                # match es una tupla con las 8 columnas detectadas
+                # Estructura típica:
+                # 0: ID Aportante
+                # 1: Nombre Aportante
+                # 2: Desde
+                # 3: Hasta
+                # 4: Salario
+                # 5: Semanas (Bloque sucio)
+                # 6: Lic/Sim (Bloque sucio o ceros)
+                # 7: Total Semanas (Bloque limpio, usualmente)
+                
+                # VERIFICACIÓN DE FILAS FUSIONADAS
+                # A veces una celda contiene "Dato1\n\nDato2". Debemos dividirlo.
+                # Tomamos la columna 'Desde' (idx 2) como referencia de cuántas filas reales hay.
+                
+                col_desde = match[2]
+                sub_filas = col_desde.split('\n')
+                num_sub_filas = len([x for x in sub_filas if x.strip()]) # Contar filas no vacías
+                
+                # Preparamos listas de datos separando por saltos de línea
+                # Usamos una función lambda segura para hacer split o repetir el valor si no tiene split
+                split_safe = lambda txt, n: txt.split('\n') if len(txt.split('\n')) >= n else [txt]*n
+                
+                # Extraemos todas las columnas expandidas
+                ids = split_safe(match[0], num_sub_filas)
+                nombres = split_safe(match[1], num_sub_filas)
+                desdes = split_safe(match[2], num_sub_filas)
+                hastas = split_safe(match[3], num_sub_filas)
+                salarios = split_safe(match[4], num_sub_filas)
+                
+                # Para semanas, preferimos la columna 7 (la última, "Total") que suele estar más limpia
+                # Si la 7 está vacía o es 0, miramos la 5
+                semanas_raw = split_safe(match[7], num_sub_filas) 
+                
+                # Iteramos sobre las sub-filas detectadas
+                for i in range(num_sub_filas):
+                    try:
+                        f_desde = desdes[i].strip()
+                        f_hasta = hastas[i].strip()
+                        
+                        # Limpieza de fechas basura
+                        if len(f_desde) < 8 or len(f_hasta) < 8: continue
+                        
+                        # Limpieza de valores numéricos
+                        s_raw = semanas_raw[i].strip() if i < len(semanas_raw) else "0"
+                        if not s_raw: # Si la columna total falla, intentar con la columna 5
+                            col5_split = split_safe(match[5], num_sub_filas)
+                            s_raw = col5_split[i].strip() if i < len(col5_split) else "0"
+                            
+                        val_semanas = limpiar_semanas(s_raw)
+                        
+                        salario_txt = salarios[i].strip() if i < len(salarios) else "0"
+                        val_salario = limpiar_moneda(salario_txt)
+                        
+                        aportante = nombres[i].strip() if i < len(nombres) else "Desconocido"
+
+                        # Guardar registro
                         datos.append({
                             "Aportante": aportante,
-                            "Desde": pd.to_datetime(fecha_desde, dayfirst=True),
-                            "Hasta": pd.to_datetime(fecha_hasta, dayfirst=True),
-                            "IBC": ibc,
-                            "Semanas": semanas,
-                            "Origen": line # Guardamos la linea original por si acaso (debug)
+                            "Desde": pd.to_datetime(f_desde, dayfirst=True, errors='coerce'),
+                            "Hasta": pd.to_datetime(f_hasta, dayfirst=True, errors='coerce'),
+                            "IBC": val_salario,
+                            "Semanas": val_semanas
                         })
-                        
                     except Exception as e:
-                        # Si falla una línea, la saltamos pero no rompemos todo
-                        continue
+                        continue # Si falla una sub-fila, intentar con la siguiente
 
     df = pd.DataFrame(datos)
     
-    # Limpieza final de datos nulos o fechas invalidas
+    # Limpieza final
     if not df.empty:
         df = df.dropna(subset=['Desde', 'Hasta'])
-        df = df[df['Semanas'] > 0] # Filtrar lineas que no sumaron semanas (info basura)
+        df = df[df['Semanas'] > 0] # Eliminar filas sin semanas cotizadas
+        df = df.sort_values('Desde')
         
     return df
 
 def aplicar_regla_simultaneidad(df):
     """
-    Maneja periodos simultáneos agrupando por AÑO-MES.
-    Regla: Sumar IBC, Maximizar Semanas (no sumar semanas).
+    Agrupa por mes (Periodo). Suma IBC, Máximo de Semanas.
     """
     if df.empty: return df
     
-    # Crear columna Periodo para agrupar (YYYY-MM)
     df['Periodo'] = df['Desde'].dt.to_period('M')
     
-    # Agrupar
     df_consolidado = df.groupby('Periodo').agg({
-        'IBC': 'sum',           # Se suman los salarios de todos los empleadores ese mes
-        'Semanas': 'max',       # Se toma el reporte de semanas más alto (usualmente 4.29)
-        'Desde': 'min',         # Inicio del periodo
-        'Hasta': 'max',         # Fin del periodo
-        'Aportante': lambda x: ' + '.join(set(x)) # Mostrar nombres unicos
+        'IBC': 'sum',
+        'Semanas': 'max', # Regla: no sumar semanas en el mismo mes
+        'Desde': 'min',
+        'Hasta': 'max',
+        'Aportante': lambda x: ' + '.join(set(x))
     }).reset_index()
     
     return df_consolidado.sort_values('Periodo')
