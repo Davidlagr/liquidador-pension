@@ -4,101 +4,76 @@ import re
 
 def extraer_tabla_cruda(archivo_pdf):
     """
-    Extrae las líneas del PDF intentando respetar la estructura original de columnas.
-    Prioriza el separador CSV '","' para evitar partir los nombres de empresas.
+    Extrae líneas del PDF y las alinea para que los registros antiguos (sin ID separado)
+    coincidan en columnas con los registros modernos (con ID separado).
     """
     filas_crudas = []
     
     with pdfplumber.open(archivo_pdf) as pdf:
         full_text = ""
         for page in pdf.pages:
-            # Extraer texto preservando estructura
             text = page.extract_text() or ""
             full_text += "\n" + text
 
     lineas = full_text.split('\n')
-    
-    # Regex para identificar líneas de datos (deben tener fechas)
-    # Acepta DD/MM/AAAA con o sin comillas
     regex_fecha = re.compile(r'\d{2}/\d{2}/\d{4}')
     
     for linea in lineas:
         linea = linea.strip()
         if not linea: continue
         
-        # 1. Filtro: La línea debe tener fechas para ser relevante
-        if not regex_fecha.search(linea):
-            continue
+        # Filtro: Debe tener fechas
+        if not regex_fecha.search(linea): continue
             
-        # 2. ESTRATEGIA DE CORTE (SPLIT)
+        # --- ESTRATEGIA DE EXTRACCIÓN Y ALINEACIÓN ---
         
-        # CASO A: Formato CSV Moderno (Tu archivo 2022-12)
-        # Identificamos el patrón de separador ","
+        # CASO A: Formato Moderno (CSV con comillas) -> Tiene ID en Col 0
         if '","' in linea:
-            # Truco: Reemplazamos el separador seguro por un token único
-            # para no confundirnos con comas dentro del texto
             token_sep = "||SEP||"
-            linea_temp = linea.replace('","', token_sep)
+            linea_temp = linea.replace('","', token_sep).strip('"')
+            partes = [p.strip() for p in linea_temp.split(token_sep)]
+            filas_crudas.append(partes)
             
-            # Limpiamos comillas del inicio y final absoluto de la línea
-            linea_temp = linea_temp.strip('"')
-            
-            # Partimos
-            partes = linea_temp.split(token_sep)
-            
-            # Limpieza final de cada celda
-            fila = [p.strip() for p in partes]
-            filas_crudas.append(fila)
-            
-        # CASO B: Formato Antiguo (Texto plano 1980s - sin comillas)
+        # CASO B: Formato Antiguo (Sin comillas) -> A veces le falta el ID separado
         else:
-            # Aquí no podemos hacer split() por espacio porque romperíamos el nombre.
-            # Usamos las FECHAS como anclas para dividir la línea en 3 bloques:
-            # [NOMBRE] [FECHAS] [VALORES]
-            
             fechas = regex_fecha.findall(linea)
             if len(fechas) >= 2:
                 f_inicio = fechas[0]
                 f_fin = fechas[1]
                 
                 try:
-                    # Partimos el texto usando la primera fecha encontrada
-                    # Parte 1: Todo lo que está antes de la fecha (El Nombre)
+                    # Partimos la línea usando las fechas como ancla
                     split_1 = linea.split(f_inicio, 1)
-                    nombre = split_1[0].strip()
+                    texto_previo = split_1[0].strip() # Nombre (y quizás ID pegado)
+                    
                     resto = split_1[1]
-                    
-                    # Parte 2: El resto lo partimos por la fecha fin
-                    # Nota: resto empieza justo después de f_inicio.
-                    # Buscamos f_fin dentro de resto
                     split_2 = resto.split(f_fin, 1)
-                    
-                    # Lo que queda después de la fecha fin son los números
                     valores_str = split_2[1].strip()
                     
-                    # Los valores sí se separan por espacios (IBC Semanas)
-                    # Usamos regex para separar por espacios grandes o tabs
                     valores = re.split(r'\s+', valores_str)
-                    valores = [v for v in valores if v] # Quitar vacíos
+                    valores = [v for v in valores if v]
                     
-                    # Reconstruimos la fila ordenada:
-                    # Col 0: Nombre, Col 1: Desde, Col 2: Hasta, Col 3...: Valores
-                    fila = [nombre, f_inicio, f_fin] + valores
-                    filas_crudas.append(fila)
+                    # --- TRUCO DE ALINEACIÓN ---
+                    # El formato CSV moderno suele ser: [ID, Nombre, Fecha1, Fecha2...]
+                    # El formato antiguo extraído es:   [Nombre, Fecha1, Fecha2...]
+                    # Para que las columnas coincidan en la selección manual,
+                    # insertamos una columna vacía al inicio del antiguo para simular el ID.
+                    
+                    fila_alineada = ["(Sin ID Separado)", texto_previo, f_inicio, f_fin] + valores
+                    filas_crudas.append(fila_alineada)
+                    
                 except:
-                    # Si falla la lógica inteligente, fallback a split simple
+                    # Si falla, agregamos tal cual (usuario tendrá que revisar)
                     filas_crudas.append(linea.split())
             else:
-                # Si solo tiene 1 fecha o es muy raro, split simple
                 filas_crudas.append(linea.split())
 
     if not filas_crudas:
         return pd.DataFrame()
 
-    # 3. Normalizar para DataFrame (Rellenar huecos)
+    # Normalizar longitud
     max_cols = max(len(f) for f in filas_crudas)
     header = [f"Columna {i}" for i in range(max_cols)]
-    
     datos_norm = [f + [None]*(max_cols-len(f)) for f in filas_crudas]
     
     return pd.DataFrame(datos_norm, columns=header)
@@ -151,6 +126,7 @@ def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas)
             # Filtro lógico
             if semanas > 55: semanas = 0
             
+            # NOTA: Aceptamos salarios bajos (>0) para incluir cotizaciones de 1980
             if semanas > 0:
                 datos.append({
                     "Desde": desde,
