@@ -2,166 +2,128 @@ import pdfplumber
 import pandas as pd
 import re
 
-def limpiar_moneda(valor_str):
+def limpiar_numero_flexible(valor_str):
     """
-    Intenta extraer el primer número que parezca dinero.
-    Ej: "$ 1.500.000", "1500000", "1.500.000.00"
+    Intenta convertir cualquier string con números a float.
+    Maneja: "1.500.000", "1,500,000.00", "4,29", "30"
     """
-    if not isinstance(valor_str, str): return 0.0
-    # Quitamos letras y símbolos raros, dejamos solo numeros, puntos y comas
-    clean_str = re.sub(r'[^\d\.,]', '', valor_str)
+    if not isinstance(valor_str, str): return None
     
-    # Si queda algo como 1.500.000, quitamos los puntos y cambiamos coma por punto
-    # Heurística: Si hay puntos y comas, el último suele ser el decimal
-    if '.' in clean_str and ',' in clean_str:
-        clean_str = clean_str.replace('.', '').replace(',', '.')
-    elif clean_str.count('.') > 1: # Caso 1.500.000
-        clean_str = clean_str.replace('.', '')
-    
-    try:
-        return float(clean_str)
-    except:
-        return 0.0
+    # 1. Limpieza inicial: quitar símbolos de moneda y espacios
+    clean = re.sub(r'[^\d\.,]', '', valor_str)
+    if not clean: return None
 
-def limpiar_semanas(valor_str):
-    """
-    Limpia semanas buscando formato decimal.
-    Ej: "4,29", "4.29", "12,00"
-    """
-    if not isinstance(valor_str, str): return 0.0
+    # 2. Heurística para puntos y comas
+    # Si tiene coma y punto (1.500,00 o 1,500.00), asumimos formato moneda
+    if ',' in clean and '.' in clean:
+        if clean.find(',') > clean.find('.'): # Caso 1.500,00 (Europa/Col)
+            clean = clean.replace('.', '').replace(',', '.')
+        else: # Caso 1,500.00 (USA)
+            clean = clean.replace(',', '')
+    elif ',' in clean: # Solo comas (4,29 o 1,500)
+        # Si parece decimal pequeño (4,29), reemplazar por punto
+        # Si parece mil (1,500), quitar
+        if len(clean.split(',')[1]) == 2: # probable decimal 4,29
+            clean = clean.replace(',', '.')
+        else:
+            clean = clean.replace(',', '')
+    elif clean.count('.') > 1: # Caso 1.500.000 (Puntos de miles)
+        clean = clean.replace('.', '')
     
-    # Buscar patrón de número decimal simple (ej: 4,29 o 12.5)
-    match = re.search(r'(\d+[\.,]\d+)', valor_str)
-    if match:
-        num = match.group(1).replace(',', '.')
-        try:
-            val = float(num)
-            if 0 < val < 55: # Semanas lógicas por mes
-                return val
-            if 55 <= val < 2000: # Semanas acumuladas o ajustes
-                return val
-        except:
-            pass
-            
-    # Si falla el regex, intento limpieza bruta
     try:
-        clean = valor_str.split()[0].replace(',', '.')
         return float(clean)
     except:
-        return 0.0
+        return None
 
 def procesar_pdf_historia_laboral(archivo_pdf):
     datos = []
     
-    # REGEX NUCLEAR:
-    # Busca par de fechas (DD/MM/AAAA) separadas por lo que sea (1 a 50 caracteres no numéricos)
-    # Esto atrapa:
-    # "01/01/2000","30/01/2000"
-    # "01/01/2000" \n "30/01/2000"
-    # 01/01/2000 ...espacio... 30/01/2000
-    regex_fechas = re.compile(r'(\d{2}/\d{2}/\d{4})[^\d]{1,50}(\d{2}/\d{2}/\d{4})')
+    # REGEX: Busca par de fechas. Ignora lo que hay en medio.
+    regex_fechas = re.compile(r'(\d{2}/\d{2}/\d{4})[^\d]{1,100}(\d{2}/\d{2}/\d{4})')
 
     full_text = ""
-    
     with pdfplumber.open(archivo_pdf) as pdf:
         for page in pdf.pages:
-            # Extraemos texto crudo
             text = page.extract_text() or ""
-            # Truco: Reemplazar saltos de línea con un caracter especial para no perder la estructura visual,
-            # pero permitiendo al regex ver "a través" de ellos.
             full_text += "\n" + text
 
-    # Si no hay texto, es un PDF imagen
-    if not full_text.strip():
-        return pd.DataFrame()
+    if not full_text.strip(): return pd.DataFrame()
 
-    # Iterar sobre todas las parejas de fechas encontradas
     for match in regex_fechas.finditer(full_text):
         fecha_desde = match.group(1)
         fecha_hasta = match.group(2)
-        
-        start_idx = match.start()
         end_idx = match.end()
+        start_idx = match.start()
 
-        # --- ANÁLISIS DEL NOMBRE (HACIA ATRÁS) ---
-        # Miramos 250 caracteres antes de la fecha de inicio
+        # --- 1. EXTRAER NOMBRE (HACIA ATRÁS) ---
         bloque_atras = full_text[max(0, start_idx-250):start_idx]
-        
-        # Limpieza rápida: quitamos saltos de línea excesivos
-        bloque_atras_clean = bloque_atras.replace('\n', ' ')
-        
-        # Buscamos texto entre comillas
-        nombres_potenciales = re.findall(r'"([^"]+)"', bloque_atras_clean)
+        nombres_potenciales = re.findall(r'"([^"]+)"', bloque_atras)
         
         nombre = "NO IDENTIFICADO"
-        if nombres_potenciales:
-            # Filtramos candidatos que parezcan IDs o fechas basura
-            candidatos = [n for n in nombres_potenciales if len(n) > 3 and not re.match(r'^[\d\.\-,/]+$', n)]
-            if candidatos:
-                nombre = candidatos[-1] # Tomamos el más cercano a la fecha
+        # Filtramos candidatos que no sean fechas ni vacíos
+        candidatos = [n.strip() for n in nombres_potenciales if len(n) > 4 and not re.search(r'\d{2}/\d{2}/\d{4}', n)]
+        if candidatos:
+            nombre = candidatos[-1] # El más cercano a la fecha
         else:
-            # Si no hay comillas, tomamos la última "frase" larga
-            frases = bloque_atras.split('\n')
-            if frases:
-                nombre = frases[-1].strip()
+            # Fallback: tomar la línea anterior
+            lines = bloque_atras.split('\n')
+            if lines: nombre = lines[-1].strip()
 
-        # --- ANÁLISIS DE VALORES (HACIA ADELANTE) ---
-        # Miramos 400 caracteres después de la fecha fin
-        bloque_adelante = full_text[end_idx:end_idx+400]
+        # --- 2. EXTRAER VALORES (HACIA ADELANTE) ---
+        # Miramos lo que hay después de la segunda fecha
+        bloque_adelante = full_text[end_idx:end_idx+300]
         
-        # Intentamos separar por la estructura CSV visual (comillas y comas)
-        # O simplemente por espacios si el CSV está roto
-        tokens = re.split(r'["\n,]+', bloque_adelante)
-        tokens = [t.strip() for t in tokens if t.strip()]
-
+        # Tokenizamos rompiendo por cualquier cosa que no sea un caracter numérico/moneda
+        # Esto separa "$1.500.000" de "4,29"
+        raw_tokens = re.split(r'["\n\s]+', bloque_adelante)
+        
+        numeros = []
+        for t in raw_tokens:
+            val = limpiar_numero_flexible(t)
+            if val is not None:
+                numeros.append(val)
+        
         ibc = 0.0
         semanas = 0.0
-        
-        # Buscamos Salario (IBC) y Semanas en los tokens
-        # Asumimos: Salario es un numero grande (> 10000), Semanas es pequeño (< 100)
-        # O Salario es el PRIMER número que encontramos
-        
-        numeros_encontrados = []
-        for t in tokens:
-            # Limpiamos para ver si es número
-            try:
-                # Quitamos simbolos monetarios
-                val_clean = t.replace('$', '').replace('.', '').replace(',', '.')
-                val_float = float(val_clean)
-                numeros_encontrados.append(val_float)
-            except:
-                # Intentar limpiar moneda con decimales
-                try: 
-                    # Caso 1.200.000,00 -> 1200000.00
-                    v = limpiar_moneda(t)
-                    if v > 0: numeros_encontrados.append(v)
-                except:
-                    pass
 
-        # Lógica de asignación basada en magnitud
-        if numeros_encontrados:
-            # El salario suele ser mayor al salario mínimo (o al menos miles)
-            posibles_salarios = [n for n in numeros_encontrados if n > 1000]
-            # Las semanas suelen ser decimales pequeños (4.29) o enteros < 55
-            posibles_semanas = [n for n in numeros_encontrados if 0 < n < 55]
-
-            # Asignar Salario
+        if numeros:
+            # ESTRATEGIA DE MAGNITUDES
+            
+            # A. ENCONTRAR IBC (Salario)
+            # El salario suele ser el primer número GRANDE (> 5000) o el primero > 0 si es antiguo
+            posibles_salarios = [n for n in numeros if n > 5000] # Filtro de ruido
             if posibles_salarios:
-                ibc = posibles_salarios[0] # El primero suele ser el IBC
-            elif numeros_encontrados:
-                # Si no hay numero grande, quizás es un salario muy viejo o en formato raro
-                # Tomamos el primero como IBC por defecto si es > 0
-                if numeros_encontrados[0] > 50: ibc = numeros_encontrados[0]
+                ibc = posibles_salarios[0]
+            elif numeros:
+                # Si no hay números grandes (salarios viejos), tomamos el primero > 0
+                if numeros[0] > 0: ibc = numeros[0]
 
-            # Asignar Semanas (Columna Total es la última)
-            if posibles_semanas:
-                # Tomamos el último valor pequeño encontrado (suele ser el Total Semanas)
-                semanas = posibles_semanas[-1]
-            else:
-                # Si no encontramos semanas explicitas pequeñas, miramos si hay un valor "total" 
-                # a veces Colpensiones pone el total acumulado.
-                # Para seguridad, si no hay semanas claras, no cargamos, o ponemos 0
-                pass
+            # B. ENCONTRAR SEMANAS
+            # Las semanas suelen ser números PEQUEÑOS (0 a 53)
+            # Colpensiones pone: Días (30) ... Semanas (4.29)
+            # Debemos priorizar el decimal (4.29) sobre el entero (30) y tomar el último.
+            
+            posibles_semanas = [n for n in numeros if 0 < n <= 54] # Filtro rango semanas
+            
+            weeks_candidate = 0.0
+            
+            # Prioridad 1: Buscar decimales exactos típicos de semanas (x.14, x.29, x.57, x.71, x.86)
+            # Esto diferencia 4.29 (semanas) de 30.0 (días)
+            decimales = [n for n in posibles_semanas if n % 1 != 0]
+            
+            if decimales:
+                weeks_candidate = decimales[-1] # Tomamos el último decimal encontrado (columna final)
+            elif posibles_semanas:
+                # Si solo hay enteros (ej: 4, 12, 50), tomamos el último
+                # Pero cuidado: si el último es 30, podría ser Días.
+                ultimo = posibles_semanas[-1]
+                if ultimo == 30 and len(posibles_semanas) > 1:
+                     # Si es 30, intentamos ver si hay otro candidato anterior que sea semanas
+                     weeks_candidate = ultimo # Riesgoso, pero si dice 30 semanas es válido
+                else:
+                    weeks_candidate = ultimo
+            
+            semanas = weeks_candidate
 
         if semanas > 0:
             datos.append({
@@ -172,10 +134,9 @@ def procesar_pdf_historia_laboral(archivo_pdf):
                 "Semanas": semanas
             })
 
-    # Construcción Final
-    if not datos:
-        return pd.DataFrame(columns=['Aportante', 'Desde', 'Hasta', 'IBC', 'Semanas'])
-
+    # Crear DF y convertir fechas
+    if not datos: return pd.DataFrame(columns=['Aportante', 'Desde', 'Hasta', 'IBC', 'Semanas'])
+    
     df = pd.DataFrame(datos)
     df['Desde'] = pd.to_datetime(df['Desde'], dayfirst=True, errors='coerce')
     df['Hasta'] = pd.to_datetime(df['Hasta'], dayfirst=True, errors='coerce')
@@ -192,10 +153,10 @@ def aplicar_regla_simultaneidad(df):
     
     df_consolidado = df.groupby('Periodo').agg({
         'IBC': 'sum',
-        'Semanas': 'max',
+        'Semanas': 'max', # REGLA: Tiempos simultáneos no suman semanas
         'Desde': 'min',
         'Hasta': 'max',
-        'Aportante': lambda x: ' / '.join(list(set(str(v) for v in x))[:2])
+        'Aportante': lambda x: ' + '.join(list(set(str(v) for v in x))[:2])
     }).reset_index()
     
     return df_consolidado.sort_values('Periodo')
