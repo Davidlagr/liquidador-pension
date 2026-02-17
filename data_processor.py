@@ -2,139 +2,130 @@ import pdfplumber
 import pandas as pd
 import re
 
-def limpiar_numero_flexible(valor_str):
+def extraer_tabla_cruda(archivo_pdf):
     """
-    Intenta convertir cualquier string con números a float.
-    Maneja: "1.500.000", "5.500", "4,29", "30"
+    Extrae TODAS las líneas del PDF que contengan al menos una fecha.
+    Divide cada línea en 'tokens' (pedazos) y crea una tabla genérica.
     """
-    if not isinstance(valor_str, str): return None
+    filas_crudas = []
     
-    # 1. Limpieza inicial
-    clean = re.sub(r'[^\d\.,]', '', valor_str)
-    if not clean: return None
-
-    # 2. Heurística para puntos y comas
-    if ',' in clean and '.' in clean:
-        if clean.find(',') > clean.find('.'): # 1.500,00
-            clean = clean.replace('.', '').replace(',', '.')
-        else: # 1,500.00
-            clean = clean.replace(',', '')
-    elif ',' in clean: 
-        # Si tiene 2 decimales (4,29) es punto. Si son 3 (1,500) es mil.
-        parts = clean.split(',')
-        if len(parts) > 1 and len(parts[-1]) == 2: 
-            clean = clean.replace(',', '.')
-        else:
-            clean = clean.replace(',', '')
-    elif clean.count('.') > 1: # 1.500.000
-        clean = clean.replace('.', '')
-    
-    try:
-        return float(clean)
-    except:
-        return None
-
-def procesar_pdf_historia_laboral(archivo_pdf):
-    datos = []
-    
-    # REGEX NUCLEAR: Busca par de fechas ignorando basura intermedia
-    # Esto funciona para formatos con y sin comillas (1980 vs 2024)
-    regex_fechas = re.compile(r'(\d{2}/\d{2}/\d{4})[^\d]{1,150}(\d{2}/\d{2}/\d{4})')
-
-    full_text = ""
     with pdfplumber.open(archivo_pdf) as pdf:
+        full_text = ""
         for page in pdf.pages:
             text = page.extract_text() or ""
             full_text += "\n" + text
 
-    # Iteramos sobre todas las fechas encontradas
-    for match in regex_fechas.finditer(full_text):
-        fecha_desde = match.group(1)
-        fecha_hasta = match.group(2)
-        end_idx = match.end()
-        start_idx = match.start()
-
-        # 1. NOMBRE (HACIA ATRÁS)
-        bloque_atras = full_text[max(0, start_idx-250):start_idx]
-        # Buscamos texto entre comillas o la última línea legible
-        nombres = re.findall(r'"([^"]+)"', bloque_atras)
-        nombre = "NO IDENTIFICADO"
-        
-        if nombres:
-            # Filtramos basura (fechas o IDs sueltos capturados como nombre)
-            candidatos = [n for n in nombres if len(n) > 3 and not re.search(r'\d{2}/\d{2}/\d{4}', n)]
-            if candidatos: nombre = candidatos[-1]
+    lineas = full_text.split('\n')
+    
+    for linea in lineas:
+        # 1. Filtro Mínimo: La línea debe tener al menos una fecha (DD/MM/AAAA)
+        # Esto elimina encabezados y pies de página basura.
+        if not re.search(r'\d{2}/\d{2}/\d{4}', linea):
+            continue
+            
+        # 2. Estrategia de Corte (Split)
+        # Si tiene comillas de CSV (Colpensiones moderno), partimos por ellas
+        if '","' in linea:
+            partes = linea.strip().strip('"').split('","')
         else:
-            # Fallback para años viejos sin comillas
-            lineas = bloque_atras.strip().split('\n')
-            if lineas: nombre = lineas[-1].strip()
+            # Si es texto plano (Colpensiones antiguo 1980s), partimos por espacios múltiples
+            # Usamos regex para partir por 2 o más espacios, o tabulaciones
+            partes = re.split(r'\s{2,}|\t|;', linea)
+            
+            # Si el split falló y dejó todo junto, intentamos split por espacio simple
+            if len(partes) < 3:
+                partes = linea.split()
 
-        # 2. VALORES (HACIA ADELANTE)
-        bloque_adelante = full_text[end_idx:end_idx+350]
-        # Tokenizamos por espacios o separadores CSV
-        tokens = re.split(r'["\n\s;]+', bloque_adelante)
+        # Limpiamos espacios en blanco de cada celda
+        partes_limpias = [p.strip() for p in partes if p.strip()]
         
-        numeros = []
-        for t in tokens:
-            val = limpiar_numero_flexible(t)
-            if val is not None: numeros.append(val)
-        
-        ibc = 0.0
-        semanas = 0.0
+        if partes_limpias:
+            filas_crudas.append(partes_limpias)
 
-        if numeros:
-            # --- LÓGICA CORREGIDA PARA AÑOS 80 ---
-            
-            # 1. SALARIO (IBC)
-            # En 1967 salario min era ~420 pesos.
-            # Regla: Cualquier número MAYOR a 55 es salario (porque semanas max es 54).
-            posibles_salarios = [n for n in numeros if n > 55]
-            
-            if posibles_salarios:
-                ibc = posibles_salarios[0] # El primer número grande es el salario
-            
-            # 2. SEMANAS
-            # Regla: Números entre 0 y 55.
-            posibles_semanas = [n for n in numeros if 0 < n <= 55]
-            
-            if posibles_semanas:
-                # Prioridad a decimales (4.29) sobre enteros (30)
-                decimales = [n for n in posibles_semanas if n % 1 != 0]
-                if decimales:
-                    semanas = decimales[-1]
-                else:
-                    # Si solo hay enteros (ej: 50 semanas), tomamos el último
-                    semanas = posibles_semanas[-1]
+    if not filas_crudas:
+        return pd.DataFrame()
 
-        if semanas > 0:
-            datos.append({
-                "Aportante": nombre,
-                "Desde": fecha_desde,
-                "Hasta": fecha_hasta,
-                "IBC": ibc,
-                "Semanas": semanas
-            })
-
-    # Crear DF
-    if not datos: return pd.DataFrame(columns=['Aportante', 'Desde', 'Hasta', 'IBC', 'Semanas'])
+    # 3. Normalizar: Crear columnas genéricas (Col 0, Col 1, Col 2...)
+    max_cols = max(len(fila) for fila in filas_crudas)
+    header = [f"Columna {i}" for i in range(max_cols)]
     
+    # Rellenar filas cortas con None para que encajen en el DataFrame
+    datos_normalizados = [fila + [None]*(max_cols-len(fila)) for fila in filas_crudas]
+    
+    df = pd.DataFrame(datos_normalizados, columns=header)
+    return df
+
+def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas):
+    """
+    Toma la tabla cruda y las columnas elegidas por el usuario para generar la tabla limpia.
+    """
+    datos = []
+    
+    for idx, row in df_crudo.iterrows():
+        try:
+            # Extraer valores crudos de las columnas seleccionadas
+            raw_desde = str(row[col_desde])
+            raw_hasta = str(row[col_hasta])
+            raw_ibc = str(row[col_ibc])
+            raw_semanas = str(row[col_semanas])
+            
+            # --- LIMPIEZA DE FECHAS ---
+            match_d = re.search(r'\d{2}/\d{2}/\d{4}', raw_desde)
+            match_h = re.search(r'\d{2}/\d{2}/\d{4}', raw_hasta)
+            
+            if not match_d or not match_h: continue
+            
+            desde = pd.to_datetime(match_d.group(0), dayfirst=True, errors='coerce')
+            hasta = pd.to_datetime(match_h.group(0), dayfirst=True, errors='coerce')
+            
+            if pd.isna(desde) or pd.isna(hasta): continue
+
+            # --- LIMPIEZA DE NÚMEROS (IBC y Semanas) ---
+            def clean_num(val):
+                if not val or val.lower() == 'none': return 0.0
+                # Dejar solo digitos, puntos y comas
+                v = re.sub(r'[^\d\.,]', '', val)
+                if not v: return 0.0
+                
+                # Heurística Punto/Coma
+                if ',' in v and '.' in v: v = v.replace('.', '').replace(',', '.')
+                elif v.count('.') > 1: v = v.replace('.', '')
+                elif ',' in v:
+                    # Si tiene 2 decimales (4,29) es decimal. Si tiene 3 (1,500) es mil.
+                    parts = v.split(',')
+                    if len(parts) > 1 and len(parts[-1]) == 2: v = v.replace(',', '.')
+                    else: v = v.replace(',', '')
+                
+                try: return float(v)
+                except: return 0.0
+
+            ibc = clean_num(raw_ibc)
+            semanas = clean_num(raw_semanas)
+            
+            # Filtro de seguridad: Semanas imposibles (> 55) se vuelven 0
+            if semanas > 55: semanas = 0
+            
+            if semanas > 0:
+                datos.append({
+                    "Desde": desde,
+                    "Hasta": hasta,
+                    "IBC": ibc,
+                    "Semanas": semanas,
+                    "Aportante": "Manual"
+                })
+
+        except Exception:
+            continue
+            
     df = pd.DataFrame(datos)
-    df['Desde'] = pd.to_datetime(df['Desde'], dayfirst=True, errors='coerce')
-    df['Hasta'] = pd.to_datetime(df['Hasta'], dayfirst=True, errors='coerce')
-    df = df.dropna(subset=['Desde', 'Hasta'])
-    
-    return df.sort_values('Desde')
+    return df.sort_values('Desde') if not df.empty else df
 
 def aplicar_regla_simultaneidad(df):
     if df.empty: return df
-    df['IBC'] = pd.to_numeric(df['IBC'])
-    df['Semanas'] = pd.to_numeric(df['Semanas'])
     df['Periodo'] = df['Desde'].dt.to_period('M')
-    
     return df.groupby('Periodo').agg({
         'IBC': 'sum',
         'Semanas': 'max',
         'Desde': 'min',
-        'Hasta': 'max',
-        'Aportante': lambda x: ' / '.join(list(set(str(v) for v in x))[:2])
+        'Hasta': 'max'
     }).reset_index().sort_values('Periodo')
