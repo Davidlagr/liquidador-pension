@@ -4,110 +4,69 @@ import re
 
 def extraer_tabla_cruda(archivo_pdf):
     """
-    Intenta extraer datos tabulares usando múltiples estrategias.
-    Garantiza devolver un DataFrame, aunque sea con datos desordenados, para que el usuario filtre.
+    Extrae filas basándose en la presencia de FECHAS, ignorando si tienen comillas o no.
+    Esto recupera registros antiguos que pueden estar en texto plano.
     """
     filas_extraidas = []
     
+    # Patrón: Busca cualquier línea que tenga al menos una fecha DD/MM/AAAA
+    regex_fecha = re.compile(r'\d{2}/\d{2}/\d{4}')
+
     with pdfplumber.open(archivo_pdf) as pdf:
         full_text = ""
         for page in pdf.pages:
-            # Extraer texto preservando el layout físico lo mejor posible
             text = page.extract_text() or ""
             full_text += "\n" + text
 
-    # Separar por líneas físicas
+    # Dividimos por saltos de línea físicos
     lineas = full_text.split('\n')
     
-    # --- ESTRATEGIA 1: DETECCIÓN POR SEPARADOR CSV ("," o ";") ---
-    # Colpensiones suele usar: "Dato","Dato","Dato"
-    separador_detectado = None
-    if '","' in full_text:
-        separador_detectado = '","'
-    elif '";"' in full_text:
-        separador_detectado = '";"'
-        
     for linea in lineas:
-        # Filtro Básico: Solo nos interesan líneas que tengan fechas (DD/MM/AAAA)
-        # Esto elimina encabezados, pies de página y basura.
-        if not re.search(r'\d{2}/\d{2}/\d{4}', linea):
+        # 1. Filtro: La línea debe tener al menos una fecha válida
+        matches = regex_fecha.findall(linea)
+        if not matches:
             continue
             
-        fila_actual = []
-        
-        if separador_detectado and separador_detectado in linea:
-            # Opción A: Es un CSV oculto
-            # Limpiamos comillas de inicio y fin
-            linea_limpia = linea.strip().strip('"')
-            # Partimos por el separador
-            cols = linea_limpia.split(separador_detectado)
-            fila_actual = [c.strip() for c in cols]
+        # 2. Estrategia de División
+        # Intento A: CSV con comillas (Formato Moderno)
+        if '","' in linea:
+            # Limpiar comillas extremas y partir
+            parts = linea.strip().strip('"').split('","')
+            filas_extraidas.append([p.strip() for p in parts])
+            
+        # Intento B: Texto plano / CSV roto (Formato Antiguo o Sucio)
         else:
-            # Opción B: Texto plano (espacios)
-            # Usamos las fechas como "Anclas" para dividir la línea
-            
-            # Buscamos todas las fechas en la línea
-            fechas = re.findall(r'\d{2}/\d{2}/\d{4}', linea)
-            
-            if len(fechas) >= 2:
-                # Asumimos estructura: [Texto Nombre] [Fecha1] [Fecha2] [Numeros...]
-                fecha_ini = fechas[0]
-                fecha_fin = fechas[1]
-                
-                # Partir la línea usando las fechas
-                try:
-                    parte1 = linea.split(fecha_ini)[0].strip() # Nombre/ID
-                    resto = linea.split(fecha_fin)[-1].strip() # Salarios/Semanas
-                    
-                    # Tokenizar la parte final (números)
-                    tokens_final = resto.split()
-                    
-                    # Construir fila artificial
-                    fila_actual = [parte1, fecha_ini, fecha_fin] + tokens_final
-                except:
-                    # Si falla el split exacto, usar split por espacios simple
-                    fila_actual = linea.split()
-            else:
-                # Si solo hay 1 fecha o formato raro, split simple
-                fila_actual = linea.split()
+            # Usamos espacios grandes o tabulaciones como separador
+            # O simplemente el espacio ' ' si no hay comillas
+            parts = linea.split()
+            # Si la línea tiene muy pocos elementos, quizás está rota, pero la guardamos
+            if len(parts) > 3: 
+                filas_extraidas.append(parts)
 
-        if fila_actual:
-            filas_extraidas.append(fila_actual)
-
-    # --- GENERACIÓN DEL DATAFRAME ---
     if not filas_extraidas:
         return pd.DataFrame()
 
-    # Normalizar longitud de filas (rellenar con None para que cuadre en un DF)
-    max_cols = max(len(f) for f in filas_extraidas)
-    
-    # Generar nombres de columnas genéricos (Columna 1, Columna 2...)
+    # Normalizar para crear DataFrame (rellenar columnas faltantes)
+    max_cols = max(len(x) for x in filas_extraidas)
     header = [f"Columna {i+1}" for i in range(max_cols)]
     
-    datos_normalizados = []
-    for fila in filas_extraidas:
-        # Rellenar faltantes
-        fila_rellena = fila + [None] * (max_cols - len(fila))
-        datos_normalizados.append(fila_rellena)
-        
-    df = pd.DataFrame(datos_normalizados, columns=header)
+    # Rellenar filas cortas con None
+    datos_norm = [row + [None]*(max_cols-len(row)) for row in filas_extraidas]
     
-    return df
+    return pd.DataFrame(datos_norm, columns=header)
 
 def limpiar_y_estandarizar(df_crudo, nombre_col_desde, nombre_col_hasta, nombre_col_ibc, nombre_col_semanas):
-    """
-    Convierte las columnas seleccionadas por el usuario en el formato estándar.
-    """
     datos = []
     
     for idx, row in df_crudo.iterrows():
         try:
-            raw_desde = str(row[nombre_col_desde])
-            raw_hasta = str(row[nombre_col_hasta])
-            raw_ibc = str(row[nombre_col_ibc])
-            raw_semanas = str(row[nombre_col_semanas])
+            # Convertir a string seguro
+            raw_desde = str(row[nombre_col_desde]) if row[nombre_col_desde] is not None else ""
+            raw_hasta = str(row[nombre_col_hasta]) if row[nombre_col_hasta] is not None else ""
+            raw_ibc = str(row[nombre_col_ibc]) if row[nombre_col_ibc] is not None else ""
+            raw_semanas = str(row[nombre_col_semanas]) if row[nombre_col_semanas] is not None else ""
             
-            # 1. Validar Fechas (Si no hay fechas, saltar fila)
+            # --- 1. Fechas ---
             match_d = re.search(r'\d{2}/\d{2}/\d{4}', raw_desde)
             match_h = re.search(r'\d{2}/\d{2}/\d{4}', raw_hasta)
             
@@ -118,26 +77,33 @@ def limpiar_y_estandarizar(df_crudo, nombre_col_desde, nombre_col_hasta, nombre_
             
             if pd.isna(desde) or pd.isna(hasta): continue
             
-            # 2. Limpiar Numeros (IBC y Semanas)
-            def clean_num(val):
-                if not val or val.lower() == 'none': return 0.0
-                # Dejar solo numeros, puntos y comas
+            # --- 2. Limpieza Numérica Universal ---
+            def limpiar_num(val):
+                if not val: return 0.0
+                # Quitar todo lo que no sea dígito, punto o coma
                 v = re.sub(r'[^\d\.,]', '', val)
-                # Estandarizar decimales
+                if not v: return 0.0
+                
+                # Heurística Punto/Coma
                 if ',' in v and '.' in v: v = v.replace('.', '').replace(',', '.')
                 elif v.count('.') > 1: v = v.replace('.', '')
-                elif ',' in v: 
-                    # Decidir si coma es mil o decimal (ej: 4,29 vs 1,500)
-                    if len(v.split(',')[1]) == 2: v = v.replace(',', '.')
+                elif ',' in v:
+                    # Si tiene 2 decimales tras la coma, es decimal (4,29)
+                    parts = v.split(',')
+                    if len(parts[-1]) == 2: v = v.replace(',', '.')
                     else: v = v.replace(',', '')
+                
                 try: return float(v)
                 except: return 0.0
 
-            ibc = clean_num(raw_ibc)
-            semanas = clean_num(raw_semanas)
+            ibc = limpiar_num(raw_ibc)
+            semanas = limpiar_num(raw_semanas)
             
-            # Filtro lógico
-            if semanas > 55: semanas = 0 # Error lectura
+            # Filtros de cordura
+            if semanas > 55: semanas = 0 # Probable error de lectura (Días en vez de Semanas)
+            
+            # Corrección Específica: A veces el IBC de 1980 es muy bajo (ej: 5000 pesos)
+            # No lo filtramos por monto mínimo, solo que sea > 0
             
             if semanas > 0:
                 datos.append({
