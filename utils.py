@@ -1,8 +1,9 @@
 import pandas as pd
 from datetime import datetime
 
-# IPC HISTÓRICO COMPLETO (1967 - 2026)
-# Fuente: DANE empalmado
+# TABLA DE IPC HISTÓRICO EMPALMADA (DANE)
+# Fuente: Serie histórica DANE (Base 2018 y empalmes anteriores)
+# Cubre desde 1967 para liquidar historias laborales antiguas.
 IPC_HISTORICO = {
     1967: 8.3, 1968: 6.8, 1969: 7.7, 1970: 6.7, 1971: 11.6, 1972: 13.6,
     1973: 20.3, 1974: 24.3, 1975: 23.3, 1976: 20.5, 1977: 33.7, 1978: 17.8,
@@ -17,29 +18,42 @@ IPC_HISTORICO = {
 }
 
 def obtener_ipc_acumulado(fecha_inicio, fecha_fin):
+    """
+    Calcula el factor multiplicador de IPC desde fecha_inicio hasta fecha_fin.
+    """
     anio_inicio = fecha_inicio.year
     anio_fin = fecha_fin.year
     
-    # Manejo de fechas muy antiguas
-    min_anio = min(IPC_HISTORICO.keys())
-    if anio_inicio < min_anio: anio_inicio = min_anio
-    if anio_fin > max(IPC_HISTORICO.keys()): anio_fin = max(IPC_HISTORICO.keys())
+    # Validar rangos
+    min_anio_tabla = min(IPC_HISTORICO.keys())
+    max_anio_tabla = max(IPC_HISTORICO.keys())
+    
+    # Si la cotización es anterior a 1967, arrancamos desde 1967
+    if anio_inicio < min_anio_tabla: 
+        anio_inicio = min_anio_tabla
+    
+    if anio_fin > max_anio_tabla: 
+        anio_fin = max_anio_tabla
 
     ipc_acumulado = 1.0
     
-    # Multiplicatoria de IPCs (Fórmula de valor presente)
-    # Valor = Valor_historico * (1 + IPC_1) * (1 + IPC_2)...
-    # Nota: Esta es una aproximación anual efectiva.
+    # Algoritmo de acumulación (Productoria)
+    # Factor = (1+IPC_1) * (1+IPC_2) ...
+    # Se toma hasta el año anterior a la fecha de corte (norma general de indexación anual)
     
-    for anio in range(anio_inicio, anio_fin): # Desde inicio hasta el año anterior al actual
+    for anio in range(anio_inicio, anio_fin): 
         if anio in IPC_HISTORICO:
              ipc_acumulado *= (1 + (IPC_HISTORICO[anio] / 100.0))
              
     return ipc_acumulado
 
 def calcular_semanas_minimas_mujeres(anio_proyeccion):
-    if anio_proyeccion < 2026: return 1300
-    if anio_proyeccion == 2026: return 1250
-    diff = anio_proyeccion - 2026
-    sem = 1250 - (25 * diff)
-    return max(sem, 1000)
+    if anio_proyeccion < 2026:
+        return 1300
+    elif anio_proyeccion == 2026:
+        return 1250
+    else:
+        diferencia_anios = anio_proyeccion - 2026
+        reduccion = 25 * (diferencia_anios + 1)
+        semanas = 1250 - (25 * diferencia_anios)
+        return max(semanas, 1000)
