@@ -4,7 +4,8 @@ import re
 
 def extraer_tabla_cruda(archivo_pdf):
     """
-    Extrae tabla cruda alineando columnas antiguas y nuevas.
+    Extrae solo la sección 'RESUMEN DE SEMANAS COTIZADAS' para evitar ruido.
+    Alinea columnas antiguas y nuevas.
     """
     filas_crudas = []
     
@@ -14,7 +15,32 @@ def extraer_tabla_cruda(archivo_pdf):
             text = page.extract_text() or ""
             full_text += "\n" + text
 
-    lineas = full_text.split('\n')
+    # --- ZONA DE RECORTE (LA IDEA NUEVA) ---
+    # Buscamos los marcadores para aislar la tabla principal
+    marcador_inicio = "RESUMEN DE SEMANAS COTIZADAS POR EMPLEADOR"
+    # Usamos una palabra clave de cierre común, o el final del documento si no está
+    marcador_fin = "DETALLE DE PAGOS EFECTUADOS ANTERIORES" 
+    
+    idx_inicio = full_text.find(marcador_inicio)
+    idx_fin = full_text.find(marcador_fin)
+    
+    texto_a_procesar = full_text
+    
+    # Aplicar recorte si encontramos los marcadores
+    if idx_inicio != -1:
+        if idx_fin != -1:
+            texto_a_procesar = full_text[idx_inicio:idx_fin]
+        else:
+            # Si no hay tabla de detalle (ej: gente joven), vamos hasta el final
+            texto_a_procesar = full_text[idx_inicio:]
+    else:
+        # Fallback: Si no encuentra el título exacto, busca "Identificación Aportante"
+        # que es la cabecera de la tabla
+        idx_alt = full_text.find("Identificación Aportante")
+        if idx_alt != -1:
+            texto_a_procesar = full_text[idx_alt:]
+
+    lineas = texto_a_procesar.split('\n')
     regex_fecha = re.compile(r'\d{2}/\d{2}/\d{4}')
     
     for linea in lineas:
@@ -22,7 +48,7 @@ def extraer_tabla_cruda(archivo_pdf):
         if not linea: continue
         if not regex_fecha.search(linea): continue
             
-        # A. Formato Moderno
+        # A. Formato Moderno (CSV con comillas)
         if '","' in linea:
             token_sep = "||SEP||"
             linea_temp = linea.replace('","', token_sep).strip('"')
@@ -61,7 +87,7 @@ def extraer_tabla_cruda(archivo_pdf):
 
 def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas):
     """
-    Limpieza inteligente: Si faltan semanas, las calcula por fechas.
+    Limpieza inteligente con rescate de semanas vacías.
     """
     datos = []
     
@@ -99,26 +125,22 @@ def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas)
             ibc = clean_num(raw_ibc)
             semanas_leidas = clean_num(raw_semanas)
             
-            # --- 3. LÓGICA DE RESCATE (LA SOLUCIÓN) ---
+            # --- 3. LÓGICA DE RESCATE (CRUCIAL PARA AÑOS 80) ---
             semanas_final = semanas_leidas
             
-            # Si el PDF dice 0 semanas o está vacío, calculamos matemáticamente
-            # También si dice > 55 (probablemente leyó días o dinero por error)
+            # Si el PDF dice 0 semanas, vacío, o un número absurdo (>55)
+            # calculamos las semanas matemáticamente por las fechas.
             recalcular = False
-            
             if semanas_leidas <= 0.1: recalcular = True
-            elif semanas_leidas > 55: recalcular = True # Error común: leyó "30" días como semanas o un código
+            elif semanas_leidas > 55: recalcular = True 
             
             if recalcular:
                 dias_calculados = (hasta - desde).days + 1
-                # Validación: Un periodo no puede ser negativo ni excesivo (ej: 50 años)
                 if 0 < dias_calculados < 12000:
                     semanas_final = dias_calculados / 7
                 else:
                     semanas_final = 0
             
-            # --- 4. GUARDAR ---
-            # Aceptamos el registro si logramos obtener semanas válidas (leídas o calculadas)
             if semanas_final > 0:
                 datos.append({
                     "Desde": desde,
