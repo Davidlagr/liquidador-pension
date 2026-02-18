@@ -9,8 +9,7 @@ class LiquidadorPension:
         self.fecha_nacimiento = pd.to_datetime(fecha_nacimiento)
         self.fecha_actual = datetime.now()
         
-        # --- TABLA IPC HISTÓRICO EMPALMADA (1967 - 2026) ---
-        # Fuente: DANE. Es vital para traer salarios de 1980 a valor presente.
+        # TABLA IPC HISTÓRICO (1967 - 2026)
         self.ipc_historico = {
             1967: 8.3, 1968: 6.8, 1969: 7.7, 1970: 6.7, 1971: 11.6, 1972: 13.6,
             1973: 20.3, 1974: 24.3, 1975: 23.3, 1976: 20.5, 1977: 33.7, 1978: 17.8,
@@ -25,7 +24,6 @@ class LiquidadorPension:
         }
 
     def obtener_factor_ipc(self, fecha_inicio, fecha_fin):
-        """Calcula cuánto se ha devaluado la moneda desde fecha_inicio hasta hoy"""
         anio_inicio = fecha_inicio.year
         anio_fin = fecha_fin.year
         
@@ -36,7 +34,6 @@ class LiquidadorPension:
         if anio_fin > max_anio: anio_fin = max_anio
         
         factor = 1.0
-        # Multiplicamos (1 + IPC) por cada año que ha pasado
         for anio in range(anio_inicio, anio_fin):
             if anio in self.ipc_historico:
                 factor *= (1 + (self.ipc_historico[anio] / 100.0))
@@ -47,17 +44,14 @@ class LiquidadorPension:
         
         df_calc = self.df.copy()
         
-        # Filtro de fecha para método "Últimos 10 años"
         if metodo == "ultimos_10":
             fecha_maxima = df_calc['Hasta'].max()
             fecha_corte = fecha_maxima - pd.DateOffset(years=10)
             df_calc = df_calc[df_calc['Hasta'] >= fecha_corte]
 
-        # Lógica de Indexación
         detalles = []
         for _, row in df_calc.iterrows():
             ibc_hist = row['IBC']
-            # Permitimos salarios bajos (ej: 5000 pesos de 1980)
             if ibc_hist <= 0: ibc_hist = 0
             
             factor = self.obtener_factor_ipc(row['Hasta'], self.fecha_actual)
@@ -73,23 +67,24 @@ class LiquidadorPension:
             })
             
         df_detalles = pd.DataFrame(detalles)
-        
         if df_detalles.empty: return 0.0, pd.DataFrame()
         
-        # El IBL es el promedio de los salarios actualizados
         ibl = df_detalles['IBC_Actualizado'].mean()
-        
         return ibl, df_detalles
 
-    def calcular_tasa_reemplazo_797(self, ibl, semanas, anio_pension):
-        # Salario mínimo legal vigente aprox 2025
+    def calcular_tasa_reemplazo_797(self, ibl, semanas, anio_pension, limitar_semanas_cotizadas=True):
+        """
+        limitar_semanas_cotizadas: 
+            True = Aplica tope de 1800 semanas (Standard Colpensiones).
+            False = Usa todas las semanas disponibles para intentar llegar al 80%.
+        """
         smmlv = 1423500 
         if ibl <= 0: return 0, 0, {}
         
         # r = 65.5 - 0.5 * s
         r_inicial = 65.5 - (0.5 * (ibl / smmlv))
         
-        # Semanas mínimas (Sentencia C-197 Mujeres)
+        # Semanas mínimas
         semanas_minimas = 1300
         if self.genero == 'Femenino':
             if anio_pension < 2026: semanas_minimas = 1300
@@ -98,26 +93,37 @@ class LiquidadorPension:
                 diff = anio_pension - 2026
                 semanas_minimas = max(1000, 1250 - (25 * diff))
         
+        # --- LÓGICA DEL TOPE 1800 ---
+        semanas_computables = semanas
+        
+        if limitar_semanas_cotizadas:
+            if semanas_computables > 1800:
+                semanas_computables = 1800
+        
         puntos_extra = 0
         semanas_extra = 0
-        if semanas > semanas_minimas:
-            semanas_extra = semanas - semanas_minimas
+        
+        if semanas_computables > semanas_minimas:
+            semanas_extra = semanas_computables - semanas_minimas
+            # 1.5% por cada 50 semanas
             puntos_extra = int(semanas_extra / 50) * 1.5
             
         tasa = r_inicial + puntos_extra
         
-        # Límites de Ley
-        if tasa < 0: tasa = 0 # (Teóricamente con salarios muy altos)
+        # Límites Finales (El 80% es Ley, no se puede saltar, pero podemos llegar a él con más semanas)
         if tasa > 80: tasa = 80
+        if tasa < 0: tasa = 0
         
         mesada = ibl * (tasa / 100)
         if mesada < smmlv: mesada = smmlv
         
-        # Garantía Pensión Mínima Ley 797
+        # Garantía Pensión Mínima
         if tasa < 0 and mesada == smmlv: tasa = (smmlv/ibl)*100
         
         detalle = {
             "r_inicial": r_inicial,
+            "semanas_totales": semanas,
+            "semanas_usadas": semanas_computables, # Para mostrar si se recortó
             "semanas_minimas": semanas_minimas,
             "semanas_extra": semanas_extra,
             "puntos_adicionales": puntos_extra,
@@ -126,7 +132,6 @@ class LiquidadorPension:
         return mesada, tasa, detalle
         
     def verificar_regimen_transicion(self):
-        # 750 semanas a 1994
         corte_1994 = pd.Timestamp("1994-04-01")
         semanas_1994 = self.df[self.df['Hasta'] <= corte_1994]['Semanas'].sum()
         return semanas_1994 >= 750
