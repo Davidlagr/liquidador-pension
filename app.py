@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import date, datetime, timedelta
 from data_processor import extraer_tabla_cruda, limpiar_y_estandarizar, aplicar_regla_simultaneidad
 from logic import LiquidadorPension
+from utils import calcular_semanas_minimas_mujeres # Asegúrate de que utils tenga esta función
 
 st.set_page_config(page_title="Liquidador & Proyector Pensional", layout="wide", page_icon="📈")
 
@@ -10,6 +11,8 @@ st.markdown("""
     <style>
     .metric-box { background-color: #f8f9fa; padding: 10px; border-radius: 5px; border-left: 5px solid #2E86C1; }
     .investment-card { background-color: #eaf2f8; padding: 15px; border-radius: 10px; border: 1px solid #d6eaf8; }
+    .status-card-ok { background-color: #d4edda; padding: 15px; border-radius: 10px; border-left: 5px solid #28a745; color: #155724; }
+    .status-card-warning { background-color: #fff3cd; padding: 15px; border-radius: 10px; border-left: 5px solid #ffc107; color: #856404; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -27,12 +30,12 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # --- CONFIGURACIÓN DE CÁLCULO ---
+    # --- CONFIGURACIÓN ---
     st.header("⚙️ Configuración")
     aplicar_tope = st.checkbox(
         "Aplicar tope de 1800 Semanas", 
         value=True,
-        help="Si está marcado, se limita el cálculo a 1800 semanas (máx 15% extra). Desmárcalo para proyectar hasta el 80% sin límite."
+        help="Marcado: Limita a 1800 semanas (máx 15% extra). Desmarcado: Usa todas las semanas (hasta 80%)."
     )
     
     st.markdown("---")
@@ -82,14 +85,75 @@ else:
     with tab1:
         st.markdown(f"### Situación Actual de {nombre}")
         
-        # Resumen Rápido
+        # 1. CÁLCULO DE ESTATUS (SEMÁFORO)
+        hoy = datetime.now().date()
+        edad_dias = (hoy - fecha_nac).days
+        edad_anios = edad_dias / 365.25
+        edad_exacta_str = f"{int(edad_anios)} Años y {int((edad_anios % 1)*12)} Meses"
+        
+        # Requisitos Legales
+        req_edad = 62 if genero == "Masculino" else 57
+        
+        # Semanas requeridas (Considerando reducción mujeres año actual)
+        req_semanas = 1300
+        if genero == "Femenino":
+            req_semanas = calcular_semanas_minimas_mujeres(hoy.year)
+            
         total_sem = df['Semanas'].sum()
+        
+        # Verificar Cumplimiento
+        cumple_edad = edad_anios >= req_edad
+        cumple_semanas = total_sem >= req_semanas
+        
+        # Cálculo de Faltantes
+        falta_edad_anios = max(0, req_edad - edad_anios)
+        falta_semanas = max(0, req_semanas - total_sem)
+        
+        # --- VISUALIZACIÓN DEL SEMÁFORO ---
+        st.markdown("#### 🚦 Estatus de Derecho Pensional")
+        
+        if cumple_edad and cumple_semanas:
+            st.markdown(f"""
+            <div class="status-card-ok">
+                <h3>✅ ¡TIENES DERECHO A PENSIÓN!</h3>
+                Has cumplido con la edad ({int(edad_anios)} años) y las semanas requeridas ({total_sem:,.2f}).<br>
+                Ya puedes radicar tu solicitud ante Colpensiones.
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            # Construir mensaje de lo que falta
+            msg_faltante = "<ul>"
+            if not cumple_edad:
+                anos_f = int(falta_edad_anios)
+                meses_f = int((falta_edad_anios % 1) * 12)
+                msg_faltante += f"<li>Te falta <b>Edad</b>: {anos_f} años y {meses_f} meses.</li>"
+            else:
+                msg_faltante += "<li>✅ Edad: Cumplida.</li>"
+                
+            if not cumple_semanas:
+                msg_faltante += f"<li>Te faltan <b>Semanas</b>: {falta_semanas:,.2f} semanas (aprox {falta_semanas/52:.1f} años cotizando).</li>"
+            else:
+                msg_faltante += "<li>✅ Semanas: Cumplidas.</li>"
+            msg_faltante += "</ul>"
+
+            st.markdown(f"""
+            <div class="status-card-warning">
+                <h3>⚠️ AÚN NO CUMPLES REQUISITOS</h3>
+                Tu estatus actual: <b>{edad_exacta_str}</b> de edad y <b>{total_sem:,.2f}</b> semanas.<br>
+                Para pensionarte necesitas:
+                {msg_faltante}
+            </div>
+            """, unsafe_allow_html=True)
+            
+        st.divider()
+
+        # Resumen Técnico
         ultimo_ibc = df['IBC'].iloc[-1] if not df.empty else 0
         
         k1, k2, k3 = st.columns(3)
         k1.metric("Semanas Acumuladas", f"{total_sem:,.2f}")
-        k2.metric("Último IBC Reportado", f"${ultimo_ibc:,.0f}")
-        k3.metric("Rango Histórico", f"{df['Desde'].dt.year.min()} - {df['Hasta'].dt.year.max()}")
+        k2.metric("Último IBC", f"${ultimo_ibc:,.0f}")
+        k3.metric("Requisito Semanas (Ley)", f"{int(req_semanas)}")
         
         st.divider()
         
@@ -119,7 +183,7 @@ else:
         )
         
         st.markdown("---")
-        st.markdown(f"### 💵 Pensión Hoy: <span style='color:green'>${mesada:,.0f}</span>", unsafe_allow_html=True)
+        st.markdown(f"### 💵 Pensión Estimada (Hoy): <span style='color:green'>${mesada:,.0f}</span>", unsafe_allow_html=True)
         c_t1, c_t2 = st.columns(2)
         c_t1.metric("Tasa Reemplazo", f"{tasa:.2f}%")
         c_t2.metric("Semanas Computadas", f"{info['semanas_usadas']:,.2f}", 
@@ -145,27 +209,27 @@ else:
             
             anios = st.slider("Tiempo a cotizar (Años)", 1, 15, 5)
             
-            # Cálculo de Costos (Salud + Pensión + FSP)
-            smmlv_est = 1423500 # Valor ref 2025
+            # Cálculo de Costos
+            smmlv_est = 1423500 
             tasa_ss = 0.285 # 16% Pensión + 12.5% Salud
             
             costo_mensual = base_costo * tasa_ss
             
-            # Fondo Solidaridad pensional (> 4 SMMLV)
+            # FSP
             fsp = 0
             if base_costo > (4 * smmlv_est):
-                fsp = base_costo * 0.01 # 1% Base
+                fsp = base_costo * 0.01 
                 costo_mensual += fsp
-                st.caption(f"Incluye 1% de Fondo Solidaridad (${fsp:,.0f})")
+                st.caption(f"Incluye 1% FSP (${fsp:,.0f})")
             
             inversion_total = costo_mensual * (anios * 12)
             
-            st.markdown("#### 💸 Costo de la Estrategia")
+            st.markdown("#### 💸 Costo Inversión")
             st.markdown(f"""
             <div class="investment-card">
-                <b>Pago Mensual (Salud+Pensión):</b><br>
+                <b>Mensual (Salud+Pens+FSP):</b><br>
                 <span style="font-size:20px; color:#c0392b">${costo_mensual:,.0f}</span><br><br>
-                <b>Inversión Total ({anios} años):</b><br>
+                <b>Total ({anios} años):</b><br>
                 <span style="font-size:18px">${inversion_total:,.0f}</span>
             </div>
             """, unsafe_allow_html=True)
@@ -173,7 +237,7 @@ else:
         with col_res:
             st.markdown("#### 2. Resultado Financiero")
             
-            # --- MOTOR DE PROYECCIÓN ---
+            # Proyección
             filas_fut = []
             fecha_cursor = df['Hasta'].max() + timedelta(days=1)
             for _ in range(anios*12):
@@ -197,39 +261,20 @@ else:
                 limitar_semanas_cotizadas=aplicar_tope
             )
             
-            # --- MÉTRICAS DE IMPACTO ---
-            delta_mesada = f_mesada - mesada
-            delta_tasa = f_tasa - tasa
+            d_mes = f_mesada - mesada
+            d_tasa = f_tasa - tasa
             
             m1, m2, m3 = st.columns(3)
-            m1.metric("Nueva Mesada", f"${f_mesada:,.0f}", f"+ ${delta_mesada:,.0f} / mes")
-            m2.metric("Nueva Tasa", f"{f_tasa:.2f}%", f"+ {delta_tasa:.2f}%")
+            m1.metric("Nueva Mesada", f"${f_mesada:,.0f}", f"+ ${d_mes:,.0f}")
+            m2.metric("Nueva Tasa", f"{f_tasa:.2f}%", f"+ {d_tasa:.2f}%")
             m3.metric("Total Semanas", f"{total_fut:,.0f}", f"+ {int(anios*12*4.29)}")
             
             st.markdown("---")
             
-            # --- ANÁLISIS DE ROI (RETORNO DE INVERSIÓN) ---
-            st.subheader("📊 Análisis de Retorno (ROI)")
-            
+            st.subheader("📊 Análisis ROI")
             col_roi1, col_roi2 = st.columns(2)
             
             with col_roi1:
-                st.write("¿Vale la pena la inversión?")
-                if delta_mesada > 0:
-                    meses_recup = inversion_total / delta_mesada
-                    anios_recup = meses_recup / 12
-                    
-                    st.success(f"✅ **¡Proyecto Viable!**")
-                    st.write(f"Recuperas tu inversión en:")
-                    st.markdown(f"### {anios_recup:.1f} Años")
-                    st.caption(f"Después de ese tiempo, el aumento de ${delta_mesada:,.0f} es ganancia neta vitalicia.")
-                else:
-                    st.error("⚠️ La inversión no genera aumento en la mesada (posiblemente ya estás en el tope o el IBL bajó).")
-            
-            with col_roi2:
-                # Gráfico Comparativo
-                df_chart = pd.DataFrame({
-                    "Concepto": ["Mesada Hoy", "Mesada Futura"],
-                    "Valor": [mesada, f_mesada]
-                })
-                st.bar_chart(df_chart.set_index("Concepto"), color="#27AE60")
+                if d_mes > 0:
+                    meses_recup = inversion_total / d_mes
+                    anios_rec
