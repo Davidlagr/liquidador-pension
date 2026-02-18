@@ -3,58 +3,143 @@ import pandas as pd
 import re
 
 def extraer_tabla_cruda(archivo_pdf):
-    # (Código del turno 17 que alinea columnas de 1980 con las de 2022)
-    # ... Si necesitas que te lo repita dímelo, pero es el mismo anterior.
-    filas = []
-    with pdfplumber.open(archivo_pdf) as pdf:
-        txt = ""
-        for p in pdf.pages: txt += (p.extract_text() or "") + "\n"
+    """
+    Extrae tabla cruda alineando columnas antiguas y nuevas.
+    """
+    filas_crudas = []
     
-    for linea in txt.split('\n'):
-        if not re.search(r'\d{2}/\d{2}/\d{4}', linea): continue
-        
-        if '","' in linea: # Moderno
-            parts = linea.replace('","', '|||').strip('"').split('|||')
-            filas.append([p.strip() for p in parts])
-        else: # Antiguo
-            fechas = re.findall(r'\d{2}/\d{2}/\d{4}', linea)
-            if len(fechas)>=2:
-                try:
-                    p1 = linea.split(fechas[0], 1)[0].strip()
-                    p2 = linea.split(fechas[1], 1)[1].strip().split()
-                    # INYECTAR COLUMNA VACÍA AL INICIO PARA ALINEAR CON MODERNO (ID)
-                    filas.append(["(Sin ID)", p1, fechas[0], fechas[1]] + p2)
-                except: filas.append(linea.split())
-            else: filas.append(linea.split())
-            
-    if not filas: return pd.DataFrame()
-    mx = max(len(f) for f in filas)
-    return pd.DataFrame([f + [None]*(mx-len(f)) for f in filas], columns=[f"Col {i}" for i in range(mx)])
+    with pdfplumber.open(archivo_pdf) as pdf:
+        full_text = ""
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            full_text += "\n" + text
 
-def limpiar_y_estandarizar(df, cd, ch, ci, cs):
-    # (El mismo código manual del turno 17)
-    datos = []
-    for _, r in df.iterrows():
-        try:
-            d = pd.to_datetime(re.search(r'\d{2}/\d{2}/\d{4}', str(r[cd])).group(0), dayfirst=True, errors='coerce')
-            h = pd.to_datetime(re.search(r'\d{2}/\d{2}/\d{4}', str(r[ch])).group(0), dayfirst=True, errors='coerce')
-            if pd.isna(d) or pd.isna(h): continue
+    lineas = full_text.split('\n')
+    regex_fecha = re.compile(r'\d{2}/\d{2}/\d{4}')
+    
+    for linea in lineas:
+        linea = linea.strip()
+        if not linea: continue
+        if not regex_fecha.search(linea): continue
             
-            def cl(v):
-                v = re.sub(r'[^\d\.,]', '', str(v))
+        # A. Formato Moderno
+        if '","' in linea:
+            token_sep = "||SEP||"
+            linea_temp = linea.replace('","', token_sep).strip('"')
+            partes = [p.strip() for p in linea_temp.split(token_sep)]
+            filas_crudas.append(partes)
+            
+        # B. Formato Antiguo (Sin comillas)
+        else:
+            fechas = regex_fecha.findall(linea)
+            if len(fechas) >= 2:
+                try:
+                    # Usamos fechas como separadores
+                    split_1 = linea.split(fechas[0], 1)
+                    p1 = split_1[0].strip() # Nombre
+                    
+                    split_2 = split_1[1].split(fechas[1], 1)
+                    p3 = split_2[1].strip() # Valores
+                    
+                    valores = re.split(r'\s+', p3)
+                    valores = [v for v in valores if v]
+                    
+                    # Alineamos agregando columna dummy al inicio
+                    filas_crudas.append(["(Sin ID)", p1, fechas[0], fechas[1]] + valores)
+                except:
+                    filas_crudas.append(linea.split())
+            else:
+                filas_crudas.append(linea.split())
+
+    if not filas_crudas: return pd.DataFrame()
+
+    max_cols = max(len(f) for f in filas_crudas)
+    header = [f"Columna {i}" for i in range(max_cols)]
+    datos_norm = [f + [None]*(max_cols-len(f)) for f in filas_crudas]
+    
+    return pd.DataFrame(datos_norm, columns=header)
+
+def limpiar_y_estandarizar(df_crudo, col_desde, col_hasta, col_ibc, col_semanas):
+    """
+    Limpieza inteligente: Si faltan semanas, las calcula por fechas.
+    """
+    datos = []
+    
+    for idx, row in df_crudo.iterrows():
+        try:
+            raw_desde = str(row[col_desde])
+            raw_hasta = str(row[col_hasta])
+            raw_ibc = str(row[col_ibc])
+            raw_semanas = str(row[col_semanas])
+            
+            # --- 1. FECHAS ---
+            match_d = re.search(r'\d{2}/\d{2}/\d{4}', raw_desde)
+            match_h = re.search(r'\d{2}/\d{2}/\d{4}', raw_hasta)
+            
+            if not match_d or not match_h: continue
+            
+            desde = pd.to_datetime(match_d.group(0), dayfirst=True, errors='coerce')
+            hasta = pd.to_datetime(match_h.group(0), dayfirst=True, errors='coerce')
+            
+            if pd.isna(desde) or pd.isna(hasta): continue
+            
+            # --- 2. VALORES ---
+            def clean_num(val):
+                if not val or val.lower() == 'none': return 0.0
+                v = re.sub(r'[^\d\.,]', '', val)
+                if not v: return 0.0
                 if ',' in v and '.' in v: v = v.replace('.','').replace(',','.')
-                elif v.count('.')>1: v = v.replace('.','')
-                elif ',' in v: v = v.replace(',','.') if len(v.split(',')[-1])==2 else v.replace(',','')
+                elif v.count('.') > 1: v = v.replace('.','')
+                elif ',' in v: 
+                    if len(v.split(',')[-1])==2: v = v.replace(',','.')
+                    else: v = v.replace(',','')
                 try: return float(v)
                 except: return 0.0
+
+            ibc = clean_num(raw_ibc)
+            semanas_leidas = clean_num(raw_semanas)
             
-            i, s = cl(r[ci]), cl(r[cs])
-            if s > 55: s = 0
-            if s > 0: datos.append({"Desde":d, "Hasta":h, "IBC":i, "Semanas":s})
-        except: continue
-    return pd.DataFrame(datos).sort_values('Desde')
+            # --- 3. LÓGICA DE RESCATE (LA SOLUCIÓN) ---
+            semanas_final = semanas_leidas
+            
+            # Si el PDF dice 0 semanas o está vacío, calculamos matemáticamente
+            # También si dice > 55 (probablemente leyó días o dinero por error)
+            recalcular = False
+            
+            if semanas_leidas <= 0.1: recalcular = True
+            elif semanas_leidas > 55: recalcular = True # Error común: leyó "30" días como semanas o un código
+            
+            if recalcular:
+                dias_calculados = (hasta - desde).days + 1
+                # Validación: Un periodo no puede ser negativo ni excesivo (ej: 50 años)
+                if 0 < dias_calculados < 12000:
+                    semanas_final = dias_calculados / 7
+                else:
+                    semanas_final = 0
+            
+            # --- 4. GUARDAR ---
+            # Aceptamos el registro si logramos obtener semanas válidas (leídas o calculadas)
+            if semanas_final > 0:
+                datos.append({
+                    "Desde": desde,
+                    "Hasta": hasta,
+                    "IBC": ibc,
+                    "Semanas": semanas_final,
+                    "Aportante": "Manual"
+                })
+
+        except Exception as e:
+            continue
+            
+    df = pd.DataFrame(datos)
+    return df.sort_values('Desde') if not df.empty else df
 
 def aplicar_regla_simultaneidad(df):
     if df.empty: return df
     df['Periodo'] = df['Desde'].dt.to_period('M')
-    return df.groupby('Periodo').agg({'IBC':'sum', 'Semanas':'max', 'Desde':'min', 'Hasta':'max'}).reset_index().sort_values('Periodo')
+    return df.groupby('Periodo').agg({
+        'IBC': 'sum',
+        'Semanas': 'max',
+        'Desde': 'min',
+        'Hasta': 'max'
+    }).reset_index().sort_values('Periodo')
