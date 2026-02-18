@@ -4,3 +4,4 @@ pdfplumber
 openpyxl
 numpy
 matplotlib
+pip install python-docx
