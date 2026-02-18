@@ -123,7 +123,14 @@ with st.sidebar:
     st.header("👤 Perfil")
     nombre = st.text_input("Nombre", "Usuario")
     genero = st.radio("Género", ["Masculino", "Femenino"])
-    fecha_nac = st.date_input("Fecha Nacimiento", value=date(1975, 1, 1))
+    
+    # --- CORRECCIÓN FECHA: Rango ampliado 1900 - Hoy ---
+    fecha_nac = st.date_input(
+        "Fecha Nacimiento", 
+        value=date(1975, 1, 1),
+        min_value=date(1900, 1, 1),
+        max_value=datetime.now().date()
+    )
     
     st.markdown("---")
     st.header("⚙️ Configuración")
