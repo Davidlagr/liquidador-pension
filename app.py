@@ -1,357 +1,326 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime, timedelta
+import matplotlib.pyplot as plt
+from datetime import date, datetime
 from io import BytesIO
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from data_processor import extraer_tabla_cruda, limpiar_y_estandarizar, aplicar_regla_simultaneidad
 from logic import LiquidadorPension
-from utils import calcular_semanas_minimas_mujeres
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Liquidador & Proyector Pensional", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Liquidador Pensional Pro", layout="wide", page_icon="⚖️")
 
-# Estilos CSS
+# --- CSS ---
 st.markdown("""
     <style>
-    .metric-box { background-color: #f8f9fa; padding: 10px; border-radius: 5px; border-left: 5px solid #2E86C1; }
-    .investment-card { background-color: #eaf2f8; padding: 15px; border-radius: 10px; border: 1px solid #d6eaf8; }
-    .status-card-ok { background-color: #d4edda; padding: 15px; border-radius: 10px; border-left: 5px solid #28a745; color: #155724; }
-    .status-card-warning { background-color: #fff3cd; padding: 15px; border-radius: 10px; border-left: 5px solid #ffc107; color: #856404; }
+    .info-box { background-color: #e8f6f3; padding: 15px; border-radius: 8px; border-left: 5px solid #1abc9c; }
+    .status-ok { color: #27ae60; font-weight: bold; }
+    .status-alert { color: #d35400; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Planeación Pensional: Calculadora & Inversión")
+st.title("⚖️ Liquidador Pensional: Análisis Técnico & Jurídico")
 
-# --- GESTIÓN DE ESTADO ---
+# --- ESTADO ---
 if 'df_crudo' not in st.session_state: st.session_state.df_crudo = None
 if 'df_final' not in st.session_state: st.session_state.df_final = None
 
 # ==========================================
-# 1. FUNCIÓN GENERADORA DE REPORTES (WORD)
+# GENERADOR DE REPORTE WORD (AVANZADO)
 # ==========================================
-def generar_reporte_word(datos_usuario, estatus, liquidacion_actual, proyeccion=None):
+def generar_reporte_completo(perfil, fechas, liq_data, proyeccion=None):
     doc = Document()
-    
-    # Estilos
     style = doc.styles['Normal']
     style.font.name = 'Arial'
-    style.font.size = Pt(11)
-    
-    # Título
-    titulo = doc.add_heading('Informe de Proyección Pensional', 0)
-    titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    doc.add_paragraph(f"Generado el: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    style.font.size = Pt(10)
+
+    # 1. TÍTULO
+    tit = doc.add_heading('DICTAMEN TÉCNICO PENSIONAL', 0)
+    tit.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph(f"Fecha de Emisión: {datetime.now().strftime('%d/%m/%Y')}")
     doc.add_paragraph("_" * 70)
 
-    # 1. PERFIL
-    doc.add_heading('1. Perfil del Afiliado', level=1)
-    p = doc.add_paragraph()
-    p.add_run(f"Nombre: {datos_usuario['nombre']}\n").bold = True
-    p.add_run(f"Género: {datos_usuario['genero']}\n")
-    p.add_run(f"Edad: {datos_usuario['edad_texto']}")
-
-    # 2. ESTATUS
-    doc.add_heading('2. Diagnóstico de Estatus Pensional', level=1)
-    if estatus['cumple_todo']:
-        p = doc.add_paragraph("ESTADO: DERECHO ADQUIRIDO")
-        p.runs[0].font.color.rgb = RGBColor(0, 128, 0)
-        p.runs[0].bold = True
-        doc.add_paragraph("Cumple con edad y semanas.")
-    else:
-        p = doc.add_paragraph("ESTADO: EN CONSTRUCCIÓN")
-        p.runs[0].font.color.rgb = RGBColor(255, 165, 0)
-        p.runs[0].bold = True
-        if not estatus['cumple_edad']: doc.add_paragraph(f"- Falta edad: {estatus['falta_edad']}")
-        if not estatus['cumple_semanas']: doc.add_paragraph(f"- Faltan semanas: {estatus['falta_semanas']:,.1f}")
-
-    # 3. LIQUIDACIÓN ACTUAL
-    doc.add_heading('3. Escenario Actual', level=1)
-    table = doc.add_table(rows=1, cols=2)
-    table.style = 'Light Grid Accent 1'
-    hdr = table.rows[0].cells
-    hdr[0].text = 'Concepto'
-    hdr[1].text = 'Valor'
+    # 2. INFORMACIÓN DEL AFILIADO Y ESTATUS
+    doc.add_heading('1. INFORMACIÓN JURÍDICA Y ESTATUS', level=1)
     
-    filas = [
-        ("Semanas Totales", f"{liquidacion_actual['semanas']:,.2f}"),
-        ("IBL (Promedio)", f"${liquidacion_actual['ibl']:,.0f}"),
-        ("Origen IBL", liquidacion_actual['origen_ibl']),
-        ("Mesada Pensional", f"${liquidacion_actual['mesada']:,.0f}"),
-        ("Tasa Reemplazo", f"{liquidacion_actual['tasa']:.2f}%")
+    # Tabla de Datos Clave
+    table = doc.add_table(rows=1, cols=2)
+    table.style = 'Table Grid'
+    
+    # Llenado de filas
+    datos = [
+        ("Afiliado", perfil['nombre']),
+        ("Fecha Nacimiento", perfil['fecha_nac']),
+        ("Fecha Cumplimiento Edad", fechas['fecha_cumple_edad'].strftime('%d/%m/%Y')),
+        ("Fecha Cumplimiento Semanas", fechas['fecha_cumple_semanas'].strftime('%d/%m/%Y') if fechas['fecha_cumple_semanas'] else "No cumplido"),
+        ("FECHA DE ESTATUS", fechas['fecha_estatus'].strftime('%d/%m/%Y') if fechas['tiene_estatus'] else "NO ADQUIRIDO"),
+        ("Última Cotización", fechas['ultima_cotizacion'].strftime('%d/%m/%Y')),
+        ("FECHA CORTE (INDEXACIÓN)", fechas['fecha_corte'].strftime('%d/%m/%Y')),
+        ("FECHA EFECTIVIDAD", fechas['fecha_efectividad'].strftime('%d/%m/%Y')),
+        ("Razón Jurídica Corte", fechas['razon_corte'])
     ]
-    for k, v in filas:
-        row = table.add_row().cells
-        row[0].text = k
-        row[1].text = v
+    
+    for k, v in datos:
+        r = table.add_row().cells
+        r[0].text = k
+        r[0].paragraphs[0].runs[0].bold = True
+        r[1].text = str(v)
 
-    # 4. PROYECCIÓN
+    # 3. RESULTADOS DE LIQUIDACIÓN
+    doc.add_paragraph()
+    doc.add_heading('2. LIQUIDACIÓN DE LA PRESTACIÓN', level=1)
+    
+    t2 = doc.add_table(rows=1, cols=2)
+    t2.style = 'Light Shading Accent 1'
+    
+    res_data = [
+        ("Semanas Totales", f"{liq_data['semanas']:,.2f}"),
+        ("IBL Aplicado", f"${liq_data['ibl']:,.0f} ({liq_data['origen_ibl']})"),
+        ("Tasa de Reemplazo", f"{liq_data['tasa']:.2f}%"),
+        ("MESADA PENSIONAL", f"${liq_data['mesada']:,.0f}")
+    ]
+    for k, v in res_data:
+        r = t2.add_row().cells
+        r[0].text = k
+        r[1].text = v
+
+    # 4. GRÁFICAS (Matplotlib -> Word)
+    doc.add_heading('3. ANÁLISIS GRÁFICO', level=1)
+    
+    # Gráfico 1: Comparativo IBL
+    fig1, ax1 = plt.subplots(figsize=(6, 3))
+    ax1.bar(["Últimos 10", "Toda Vida"], [liq_data['ibl_10'], liq_data['ibl_vida']], color=['#3498db', '#2ecc71'])
+    ax1.set_title("Comparativo Ingreso Base de Liquidación (IBL)")
+    ax1.yaxis.set_major_formatter('${x:,.0f}')
+    
+    memfile1 = BytesIO()
+    fig1.savefig(memfile1)
+    doc.add_picture(memfile1, width=Inches(5))
+    memfile1.close()
+    
+    # 5. DETALLE TÉCNICO (SOPORTES COMPLETOS)
+    doc.add_page_break()
+    doc.add_heading('ANEXO: SOPORTE TÉCNICO DE IBL', level=1)
+    doc.add_paragraph(f"Detalle del cálculo: {liq_data['origen_ibl']}")
+    doc.add_paragraph(f"Fecha de Indexación usada: {fechas['fecha_corte'].strftime('%d/%m/%Y')}")
+
+    # Convertir DataFrame a Tabla Word (Puede ser largo, tomamos los primeros 50 o todo si se quiere)
+    df_soporte = liq_data['df_soporte']
+    
+    if not df_soporte.empty:
+        # Tabla encabezados
+        t3 = doc.add_table(rows=1, cols=5)
+        t3.style = 'Table Grid'
+        hdr = t3.rows[0].cells
+        hdr[0].text = 'Desde'
+        hdr[1].text = 'Hasta'
+        hdr[2].text = 'IBC Histórico'
+        hdr[3].text = 'Factor IPC'
+        hdr[4].text = 'IBC Actualizado'
+        
+        # Filas (Limitamos a 200 filas para no explotar el Word, o todo)
+        for _, row in df_soporte.iterrows():
+            rc = t3.add_row().cells
+            rc[0].text = row['Desde'].strftime('%d/%m/%Y')
+            rc[1].text = row['Hasta'].strftime('%d/%m/%Y')
+            rc[2].text = f"${row['IBC_Historico']:,.0f}"
+            rc[3].text = f"{row['Factor_IPC']:.4f}"
+            rc[4].text = f"${row['IBC_Actualizado']:,.0f}"
+
+    # 6. PROYECCIÓN (SI EXISTE)
     if proyeccion:
-        doc.add_heading('4. Proyección Futura', level=1)
+        doc.add_page_break()
+        doc.add_heading('4. PROYECCIÓN DE MEJORA PENSIONAL', level=1)
         doc.add_paragraph(f"Estrategia: {proyeccion['estrategia']}")
         
-        # Tabla Comparativa
-        t2 = doc.add_table(rows=1, cols=3)
-        t2.style = 'Light Shading Accent 1'
-        h2 = t2.rows[0].cells
-        h2[0].text = 'Escenario'
-        h2[1].text = 'Mesada'
-        h2[2].text = 'Tasa'
+        t4 = doc.add_table(rows=1, cols=2)
+        t4.style = 'Medium Grid 1 Accent 2'
         
-        r1 = t2.add_row().cells; r1[0].text="HOY"; r1[1].text=f"${liquidacion_actual['mesada']:,.0f}"; r1[2].text=f"{liquidacion_actual['tasa']:.2f}%"
-        r2 = t2.add_row().cells; r2[0].text="FUTURO"; r2[1].text=f"${proyeccion['mesada_futura']:,.0f}"; r2[2].text=f"{proyeccion['tasa_futura']:.2f}%"
+        proy_dat = [
+            ("Inversión Total", f"${proyeccion['inversion']:,.0f}"),
+            ("Nueva Mesada", f"${proyeccion['mesada_fut']:,.0f}"),
+            ("Incremento Mensual", f"${proyeccion['delta']:,.0f}"),
+            ("Tiempo Recuperación", f"{proyeccion['roi']:.1f} Años")
+        ]
+        for k, v in proy_dat:
+            r = t4.add_row().cells
+            r[0].text = k
+            r[1].text = v
+            
+        # Gráfico ROI
+        fig2, ax2 = plt.subplots(figsize=(6, 3))
+        ax2.bar(["Hoy", "Futuro"], [liq_data['mesada'], proyeccion['mesada_fut']], color='#e67e22')
+        ax2.set_title("Proyección de Mesada")
         
-        doc.add_heading('4.1 Análisis Financiero', level=2)
-        doc.add_paragraph(f"Inversión Total: ${proyeccion['inversion_total']:,.0f}")
-        doc.add_paragraph(f"Aumento Mensual: ${proyeccion['delta_mesada']:,.0f}")
-        
-        if proyeccion['delta_mesada'] > 0:
-            p = doc.add_paragraph(f"Recuperación de Inversión: {proyeccion['anios_recuperacion']:.1f} Años")
-            p.runs[0].bold = True
+        memfile2 = BytesIO()
+        fig2.savefig(memfile2)
+        doc.add_picture(memfile2, width=Inches(5))
+        memfile2.close()
 
-    # Buffer
     buffer = BytesIO()
     doc.save(buffer)
     buffer.seek(0)
     return buffer
 
 # ==========================================
-# 2. INTERFAZ DE USUARIO (SIDEBAR)
+# INTERFAZ (SIDEBAR)
 # ==========================================
 with st.sidebar:
-    st.header("👤 Perfil")
+    st.header("👤 Datos")
     nombre = st.text_input("Nombre", "Usuario")
     genero = st.radio("Género", ["Masculino", "Femenino"])
+    fecha_nac = st.date_input("Nacimiento", value=date(1975, 1, 1), min_value=date(1900,1,1))
     
-    # --- CORRECCIÓN FECHA: Rango ampliado 1900 - Hoy ---
-    fecha_nac = st.date_input(
-        "Fecha Nacimiento", 
-        value=date(1975, 1, 1),
-        min_value=date(1900, 1, 1),
-        max_value=datetime.now().date()
-    )
-    
-    st.markdown("---")
-    st.header("⚙️ Configuración")
-    aplicar_tope = st.checkbox("Aplicar tope 1800 Semanas", value=True, help="Límite legal estándar. Desmarcar para buscar 80% con más semanas.")
-    
-    st.markdown("---")
+    st.divider()
+    aplicar_tope = st.checkbox("Tope 1800 Semanas", value=True)
     if st.button("🔄 Reiniciar"):
         st.session_state.df_crudo = None
         st.session_state.df_final = None
         st.rerun()
 
 # ==========================================
-# 3. LÓGICA PRINCIPAL
+# LÓGICA PRINCIPAL
 # ==========================================
-
-# FASE 1: CARGA
 if st.session_state.df_final is None:
-    st.info("📂 Carga tu Historia Laboral (PDF).")
-    uploaded_file = st.file_uploader("Subir PDF Colpensiones", type="pdf")
+    st.info("📂 Carga el PDF de Historia Laboral")
+    uploaded_file = st.file_uploader("Archivo PDF", type="pdf")
 
     if uploaded_file:
         if st.session_state.df_crudo is None:
             st.session_state.df_crudo = extraer_tabla_cruda(uploaded_file)
         
-        df_disp = st.session_state.df_crudo
-        if df_disp is not None and not df_disp.empty:
-            st.success("✅ Archivo leído.")
-            st.dataframe(df_disp.head(3), use_container_width=True)
-            cols = df_disp.columns.tolist()
+        df = st.session_state.df_crudo
+        if df is not None and not df.empty:
+            st.dataframe(df.head(3))
+            cols = df.columns.tolist()
             c1, c2, c3, c4 = st.columns(4)
-            col_d = c1.selectbox("DESDE", cols, index=2 if len(cols)>2 else 0)
-            col_h = c2.selectbox("HASTA", cols, index=3 if len(cols)>3 else 0)
-            col_i = c3.selectbox("SALARIO", cols, index=4 if len(cols)>4 else 0)
-            col_s = c4.selectbox("SEMANAS", cols, index=len(cols)-1)
+            cd = c1.selectbox("Desde", cols, index=2 if len(cols)>2 else 0)
+            ch = c2.selectbox("Hasta", cols, index=3 if len(cols)>3 else 0)
+            ci = c3.selectbox("IBC", cols, index=4 if len(cols)>4 else 0)
+            cs = c4.selectbox("Semanas", cols, index=len(cols)-1)
             
-            if st.button("🚀 Procesar"):
-                df_clean = limpiar_y_estandarizar(df_disp, col_d, col_h, col_i, col_s)
-                if not df_clean.empty:
-                    st.session_state.df_final = aplicar_regla_simultaneidad(df_clean)
+            if st.button("Procesar"):
+                clean = limpiar_y_estandarizar(df, cd, ch, ci, cs)
+                if not clean.empty:
+                    st.session_state.df_final = aplicar_regla_simultaneidad(clean)
                     st.rerun()
-                else: st.error("Sin datos válidos.")
-        else: st.warning("PDF vacío/Imagen.")
+                else: st.error("Error columnas")
 
-# FASE 2: VISUALIZACIÓN COMPLETA
 else:
+    # --- CÁLCULOS TÉCNICOS ---
     df = st.session_state.df_final
     liq = LiquidadorPension(df, genero, fecha_nac)
     
-    # --- CÁLCULOS GLOBALES PREVIOS ---
-    hoy = datetime.now().date()
-    edad_dias = (hoy - fecha_nac).days
-    edad_anios = edad_dias / 365.25
-    req_edad = 62 if genero == "Masculino" else 57
-    req_semanas = 1300 if genero == "Masculino" else calcular_semanas_minimas_mujeres(hoy.year)
-    total_sem = df['Semanas'].sum()
-    ultimo_ibc = df['IBC'].iloc[-1]
+    # 1. Determinar Fechas Clave (Estatus, Corte, etc.)
+    fechas_clave = liq.determinar_fechas_clave()
     
-    # Diccionarios para el reporte
-    datos_usuario = {
-        "nombre": nombre, "genero": genero, 
-        "edad_texto": f"{int(edad_anios)} Años y {int((edad_anios%1)*12)} Meses"
-    }
-    
-    estatus_dict = {
-        "cumple_todo": (edad_anios >= req_edad and total_sem >= req_semanas),
-        "cumple_edad": edad_anios >= req_edad,
-        "cumple_semanas": total_sem >= req_semanas,
-        "falta_edad": f"{int(max(0, req_edad - edad_anios))} años",
-        "falta_semanas": max(0, req_semanas - total_sem)
-    }
-
-    # IBL
-    ibl_10, det_10 = liq.calcular_ibl_indexado("ultimos_10")
-    ibl_vida, det_vida = liq.calcular_ibl_indexado("toda_vida")
+    # 2. Calcular IBL usando la FECHA DE CORTE JURÍDICA
+    ibl_10, det_10 = liq.calcular_ibl_indexado(fechas_clave['fecha_corte'], "ultimos_10")
+    ibl_vida, det_vida = liq.calcular_ibl_indexado(fechas_clave['fecha_corte'], "toda_vida")
     ibl_def = max(ibl_10, ibl_vida)
     origen_ibl = "Últimos 10 Años" if ibl_10 >= ibl_vida else "Toda la Vida"
     
-    # Mesada Actual
-    mesada, tasa, info = liq.calcular_tasa_reemplazo_797(ibl_def, total_sem, datetime.now().year, aplicar_tope)
-    
-    liq_actual_dict = {
-        "semanas": total_sem, "ibl": ibl_def, "origen_ibl": origen_ibl,
-        "tasa": tasa, "mesada": mesada
-    }
-    
-    # Variable placeholder para proyección
-    proyeccion_dict = None
+    # 3. Liquidar
+    total_sem = df['Semanas'].sum()
+    mesada, tasa, info = liq.calcular_tasa_reemplazo_797(
+        ibl_def, total_sem, datetime.now().year, aplicar_tope
+    )
 
     # --- PESTAÑAS VISUALES ---
-    tab1, tab2 = st.tabs(["📊 DIAGNÓSTICO ACTUAL", "💰 PROYECCIÓN & INVERSIÓN"])
+    tab1, tab2 = st.tabs(["📊 DIAGNÓSTICO JURÍDICO", "💰 PROYECCIÓN"])
     
-    # === PESTAÑA 1: DIAGNÓSTICO ===
     with tab1:
-        st.markdown(f"### Análisis de {nombre}")
+        st.subheader(f"Dictamen de Estatus: {nombre}")
         
-        # 1. Semáforo
-        if estatus_dict['cumple_todo']:
-            st.markdown(f"""<div class="status-card-ok"><h3>✅ DERECHO ADQUIRIDO</h3>Edad: {datos_usuario['edad_texto']} | Semanas: {total_sem:,.0f}</div>""", unsafe_allow_html=True)
-        else:
-            msg = f"Faltan: {estatus_dict['falta_edad']} edad" if not estatus_dict['cumple_edad'] else "Edad OK"
-            msg += f" | {estatus_dict['falta_semanas']:,.0f} semanas" if not estatus_dict['cumple_semanas'] else " | Semanas OK"
-            st.markdown(f"""<div class="status-card-warning"><h3>⚠️ EN CONSTRUCCIÓN</h3>{msg}</div>""", unsafe_allow_html=True)
-
-        st.divider()
-
-        # 2. Resumen Métricas
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Semanas Totales", f"{total_sem:,.2f}")
-        c2.metric("Último Salario", f"${ultimo_ibc:,.0f}")
-        c3.metric("Requisito Semanas", f"{int(req_semanas)}")
-        
-        # 3. IBL y Soportes (AQUÍ ESTÁ LO QUE FALTABA)
-        st.divider()
-        colL, colR = st.columns(2)
-        with colL:
-            st.markdown("#### Base de Liquidación (IBL)")
-            st.info(f"IBL Favorable: **{origen_ibl}** (${ibl_def:,.0f})")
-            st.bar_chart(pd.DataFrame({"Monto":[ibl_10, ibl_vida]}, index=["10 Años", "Toda Vida"]), color="#2E86C1")
-        
-        with colR:
-            st.markdown("#### 📄 Soportes Técnicos")
-            # Estos expander son los que restauramos
-            with st.expander(f"Ver Detalle Últimos 10 Años (${ibl_10:,.0f})"):
-                st.dataframe(det_10)
-            with st.expander(f"Ver Detalle Toda la Vida (${ibl_vida:,.0f})"):
-                st.dataframe(det_vida)
-
-        # 4. Resultado Final Hoy
-        st.markdown("---")
-        st.markdown(f"### 💵 Pensión Hoy: <span style='color:green'>${mesada:,.0f}</span>", unsafe_allow_html=True)
-        m1, m2 = st.columns(2)
-        m1.metric("Tasa Reemplazo", f"{tasa:.2f}%")
-        m2.metric("Semanas Computadas", f"{info['semanas_usadas']:,.2f}", delta="Tope 1800 Activo" if aplicar_tope and total_sem>1800 else "Sin Tope")
-
-    # === PESTAÑA 2: PROYECCIÓN ===
-    with tab2:
-        st.markdown("### 🔮 Simulador de Futuro")
-        col_conf, col_res = st.columns([1, 2])
-        
-        # Configuración Proyección
-        with col_conf:
-            st.markdown("#### Estrategia")
-            modo = st.radio("Opción:", ["Cotizar Independiente", "Aporte Extra"])
-            if modo.startswith("Cotizar"):
-                nuevo_ibc = st.number_input("Nuevo IBC ($)", value=float(ultimo_ibc), step=100000.0)
-                base_costo = nuevo_ibc
-            else:
-                extra = st.number_input("Extra ($)", value=1000000.0, step=100000.0)
-                nuevo_ibc = ultimo_ibc + extra
-                base_costo = extra
-            
-            anios = st.slider("Años a cotizar", 1, 15, 5)
-            
-            # Cálculo de Costos (Visual)
-            costo_mes = base_costo * 0.285
-            if base_costo > (4 * 1423500): costo_mes += base_costo*0.01
-            inv_total = costo_mes * anios * 12
-            
+        # Bloque de Fechas Clave (Lo que pediste)
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
             st.markdown(f"""
-            <div class="investment-card">
-                <b>Costo Mensual:</b> ${costo_mes:,.0f}<br>
-                <b>Inversión Total:</b> ${inv_total:,.0f}
+            <div class='info-box'>
+                <b>Fecha Cumplimiento Edad:</b> {fechas_clave['fecha_cumple_edad'].strftime('%d/%m/%Y')}<br>
+                <b>Fecha Cumplimiento Semanas:</b> {fechas_clave['fecha_cumple_semanas'].strftime('%d/%m/%Y') if fechas_clave['fecha_cumple_semanas'] else 'No cumplido'}<br>
+                <b>FECHA DE ESTATUS:</b> {fechas_clave['fecha_estatus'].strftime('%d/%m/%Y') if fechas_clave['tiene_estatus'] else 'PENDIENTE'}
             </div>
             """, unsafe_allow_html=True)
+            
+        with col_f2:
+            st.markdown(f"""
+            <div class='info-box' style='border-color: #e67e22; background-color: #fcf3cf;'>
+                <b>FECHA DE CORTE (INDEXACIÓN):</b> {fechas_clave['fecha_corte'].strftime('%d/%m/%Y')}<br>
+                <b>Razón:</b> {fechas_clave['razon_corte']}<br>
+                <b>FECHA EFECTIVIDAD:</b> {fechas_clave['fecha_efectividad'].strftime('%d/%m/%Y')}
+            </div>
+            """, unsafe_allow_html=True)
+            
+        st.divider()
+        
+        # Resultados
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Semanas Totales", f"{total_sem:,.2f}")
+        c2.metric("IBL Calculado", f"${ibl_def:,.0f}")
+        c3.metric("Mesada", f"${mesada:,.0f}")
+        c4.metric("Tasa", f"{tasa:.2f}%")
+        
+        st.caption(f"IBL basado en: {origen_ibl}")
+        
+        with st.expander("Ver Detalle IBL Aplicado"):
+            st.dataframe(det_10 if ibl_10 >= ibl_vida else det_vida)
 
-        # Resultados Proyección
-        with col_res:
-            st.markdown("#### Resultado")
-            # Generar datos futuros
-            filas_fut = []
+    with tab2:
+        st.subheader("Simulación")
+        c_conf, c_res = st.columns([1, 2])
+        
+        # Config Proyección
+        with c_conf:
+            opcion = st.radio("Estrategia", ["Cotizar Indep.", "Extra"])
+            ultimo = df['IBC'].iloc[-1]
+            val = st.number_input("Valor", value=float(ultimo) if "Cotizar" in opcion else 1000000.0)
+            anios = st.slider("Años", 1, 15, 5)
+            
+            nuevo_ibc = val if "Cotizar" in opcion else ultimo + val
+            costo = (val if "Cotizar" in opcion else val) * 0.285
+            inv = costo * anios * 12
+            st.metric("Inversión Total", f"${inv:,.0f}")
+
+        # Calc Proyección
+        with c_res:
+            filas = []
             cur = df['Hasta'].max() + timedelta(days=1)
             for _ in range(anios*12):
-                fin = cur + timedelta(days=30)
-                filas_fut.append({"Desde": cur, "Hasta": fin, "IBC": nuevo_ibc, "Semanas": 4.29})
-                cur = fin + timedelta(days=1)
+                filas.append({"Desde": cur, "Hasta": cur+timedelta(days=30), "IBC": nuevo_ibc, "Semanas": 4.29})
+                cur += timedelta(days=31)
             
-            df_fut = pd.concat([df, pd.DataFrame(filas_fut)], ignore_index=True)
-            total_fut = df_fut['Semanas'].sum()
-            
+            df_fut = pd.concat([df, pd.DataFrame(filas)], ignore_index=True)
             liq_f = LiquidadorPension(df_fut, genero, fecha_nac)
-            fi_def = max(liq_f.calcular_ibl_indexado("ultimos_10")[0], liq_f.calcular_ibl_indexado("toda_vida")[0])
             
-            f_mes, f_tas, _ = liq_f.calcular_tasa_reemplazo_797(fi_def, total_fut, datetime.now().year + anios, aplicar_tope)
+            # Usamos fecha corte futura
+            fechas_fut = liq_f.determinar_fechas_clave()
+            ibl_f = max(liq_f.calcular_ibl_indexado(fechas_fut['fecha_corte'], "ultimos_10")[0], 
+                        liq_f.calcular_ibl_indexado(fechas_fut['fecha_corte'], "toda_vida")[0])
             
-            delta = f_mes - mesada
-            roi = (inv_total / delta / 12) if delta > 0 else 0
+            mes_f, tasa_f, _ = liq_f.calcular_tasa_reemplazo_797(ibl_f, df_fut['Semanas'].sum(), datetime.now().year+anios, aplicar_tope)
             
-            # Métricas Visuales
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Nueva Mesada", f"${f_mes:,.0f}", f"+ ${delta:,.0f}")
-            k2.metric("Nueva Tasa", f"{f_tas:.2f}%")
-            k3.metric("Semanas Futuras", f"{total_fut:,.0f}")
+            delta = mes_f - mesada
+            roi = (inv / delta / 12) if delta > 0 else 0
             
-            st.markdown("#### Rentabilidad (ROI)")
-            if roi > 0:
-                st.success(f"✅ Recuperas la inversión en **{roi:.1f} años** de pensionado.")
-                st.bar_chart(pd.DataFrame({"Valor": [mesada, f_mes]}, index=["Hoy", "Futuro"]), color="#27AE60")
-            else:
-                st.error("⚠️ La inversión no aumenta la mesada (posible tope).")
-
-            # Guardar datos para el reporte Word
-            proyeccion_dict = {
-                "estrategia": f"{modo} por {anios} años (IBC Ref: ${nuevo_ibc:,.0f})",
-                "anios": anios,
-                "inversion_total": inv_total,
-                "mesada_futura": f_mes,
-                "tasa_futura": f_tas,
-                "delta_mesada": delta,
-                "anios_recuperacion": roi
+            m1, m2 = st.columns(2)
+            m1.metric("Mesada Futura", f"${mes_f:,.0f}", f"+ ${delta:,.0f}")
+            if roi > 0: st.success(f"Recuperación en {roi:.1f} años")
+            else: st.error("Sin mejora financiera")
+            
+            proyeccion_data = {
+                "estrategia": f"Aporte ${val:,.0f} por {anios} años",
+                "inversion": inv, "mesada_fut": mes_f, "delta": delta, "roi": roi
             }
 
-    # --- BOTÓN DE DESCARGA (SIDEBAR) ---
+    # --- BOTÓN WORD ---
     st.sidebar.markdown("---")
-    st.sidebar.header("📄 Informe")
+    liq_data = {"semanas": total_sem, "ibl": ibl_def, "origen_ibl": origen_ibl, "tasa": tasa, "mesada": mesada, 
+                "ibl_10": ibl_10, "ibl_vida": ibl_vida, "df_soporte": det_10 if ibl_10 >= ibl_vida else det_vida}
     
-    # Se genera el documento con los datos recopilados en tiempo real
-    archivo_word = generar_reporte_word(datos_usuario, estatus_dict, liq_actual_dict, proyeccion_dict)
+    perfil = {"nombre": nombre, "fecha_nac": fecha_nac.strftime('%d/%m/%Y')}
     
-    st.sidebar.download_button(
-        label="📥 Descargar Reporte (Word)",
-        data=archivo_word,
-        file_name=f"Estudio_Pensional_{nombre}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
+    docx = generar_reporte_completo(perfil, fechas_clave, liq_data, proyeccion_data if 'proyeccion_data' in locals() else None)
+    
+    st.sidebar.download_button("📥 Descargar Dictamen (Word)", docx, f"Dictamen_{nombre}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
