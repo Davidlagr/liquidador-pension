@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-from datetime import date, datetime
+from datetime import date, datetime, timedelta  # <--- AQUÍ FALTABA TIMEDELTA
 from io import BytesIO
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
@@ -105,7 +105,7 @@ def generar_reporte_completo(perfil, fechas, liq_data, proyeccion=None):
     doc.add_paragraph(f"Detalle del cálculo: {liq_data['origen_ibl']}")
     doc.add_paragraph(f"Fecha de Indexación usada: {fechas['fecha_corte'].strftime('%d/%m/%Y')}")
 
-    # Convertir DataFrame a Tabla Word (Puede ser largo, tomamos los primeros 50 o todo si se quiere)
+    # Convertir DataFrame a Tabla Word
     df_soporte = liq_data['df_soporte']
     
     if not df_soporte.empty:
@@ -119,7 +119,7 @@ def generar_reporte_completo(perfil, fechas, liq_data, proyeccion=None):
         hdr[3].text = 'Factor IPC'
         hdr[4].text = 'IBC Actualizado'
         
-        # Filas (Limitamos a 200 filas para no explotar el Word, o todo)
+        # Filas
         for _, row in df_soporte.iterrows():
             rc = t3.add_row().cells
             rc[0].text = row['Desde'].strftime('%d/%m/%Y')
@@ -170,7 +170,9 @@ with st.sidebar:
     st.header("👤 Datos")
     nombre = st.text_input("Nombre", "Usuario")
     genero = st.radio("Género", ["Masculino", "Femenino"])
-    fecha_nac = st.date_input("Nacimiento", value=date(1975, 1, 1), min_value=date(1900,1,1))
+    
+    # Rango de fechas corregido (1900 - Hoy)
+    fecha_nac = st.date_input("Nacimiento", value=date(1975, 1, 1), min_value=date(1900,1,1), max_value=datetime.now().date())
     
     st.divider()
     aplicar_tope = st.checkbox("Tope 1800 Semanas", value=True)
@@ -321,6 +323,7 @@ else:
     
     perfil = {"nombre": nombre, "fecha_nac": fecha_nac.strftime('%d/%m/%Y')}
     
+    # Generar Word
     docx = generar_reporte_completo(perfil, fechas_clave, liq_data, proyeccion_data if 'proyeccion_data' in locals() else None)
     
     st.sidebar.download_button("📥 Descargar Dictamen (Word)", docx, f"Dictamen_{nombre}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
