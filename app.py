@@ -175,7 +175,7 @@ def generar_reporte_completo(perfil, fechas, liq_data, proyeccion=None):
         datos_proy = [
             ("Estrategia / Tipo", proyeccion['estrategia']),
             ("Años Proyectados", f"{proyeccion['anios']} años"),
-            ("Costo Promedio Anual", f"${proyeccion['costo_anual']:,.0f}"),
+            ("Costo Promedio Anual (Solo Indep.)", f"${proyeccion['costo_anual']:,.0f}"),
             ("INVERSIÓN TOTAL", f"${proyeccion['inversion']:,.0f}"),
             ("NUEVA MESADA PROYECTADA", f"${proyeccion['mesada_fut']:,.0f}"),
             ("Incremento de Mesada (Delta)", f"${proyeccion['delta']:,.0f} mensuales"),
@@ -203,7 +203,7 @@ def generar_reporte_completo(perfil, fechas, liq_data, proyeccion=None):
         fig_p2, ax_p2 = plt.subplots(figsize=(6, 3))
         anios_max = int(np.ceil(proyeccion['roi'])) + 3 if proyeccion['roi'] > 0 else 10
         x_anios = np.arange(0, anios_max + 1)
-        y_retorno = x_anios * proyeccion['delta'] * 12  # Ganancia anualizada
+        y_retorno = x_anios * proyeccion['delta'] * 12
         
         ax_p2.plot(x_anios, y_retorno, label='Retorno Acumulado', color='green', marker='o')
         ax_p2.axhline(y=proyeccion['inversion'], color='red', linestyle='--', label='Costo Total de Inversión')
@@ -237,7 +237,6 @@ with st.sidebar:
     st.divider()
     aplicar_tope = st.checkbox("Tope 1800 Semanas", value=True)
     
-    # Botón para cerrar sesión
     if st.button("🚪 Cerrar Sesión"):
         st.session_state.autenticado = False
         st.session_state.df_crudo = None
@@ -278,13 +277,11 @@ if st.session_state.df_final is None:
                 else: st.error("Error columnas")
 
 else:
-    # --- CÁLCULOS TÉCNICOS ---
     df = st.session_state.df_final
     liq = LiquidadorPension(df, genero, fecha_nac)
     
     fechas_clave = liq.determinar_fechas_clave()
     
-    # CALCULAMOS LOS DOS IBL POR SEPARADO
     ibl_10, det_10 = liq.calcular_ibl_indexado(fechas_clave['fecha_corte'], "ultimos_10")
     ibl_vida, det_vida = liq.calcular_ibl_indexado(fechas_clave['fecha_corte'], "toda_vida")
     
@@ -296,7 +293,6 @@ else:
         ibl_def, total_sem, datetime.now().year, aplicar_tope
     )
 
-    # --- PESTAÑA 1: DIAGNÓSTICO DETALLADO ---
     tab1, tab2 = st.tabs(["📊 DIAGNÓSTICO JURÍDICO", "📈 PROYECCIÓN DE MEJORA"])
     
     with tab1:
@@ -357,29 +353,36 @@ else:
         
         with c_conf:
             st.markdown("**Configuración del Escenario**")
-            opcion = st.radio("Modalidad de Cotización", ["Independiente (Aporte 16% del IBC)", "Aporte Adicional Combinado"])
-            ultimo = float(df['IBC'].iloc[-1]) if not df.empty else 1300000.0
+            opcion = st.radio("Modalidad de Cotización", ["Cotizante Independiente", "Dependiente + Extra Independiente"])
+            ultimo_ibc = float(df['IBC'].iloc[-1]) if not df.empty else 1300000.0
             
-            val = st.number_input("Ingreso Base de Cotización (IBC) Mensual Objetivo", value=ultimo, step=100000.0)
+            if opcion == "Cotizante Independiente":
+                val_ibc = st.number_input("Ingreso Base de Cotización (IBC) Mensual", value=ultimo_ibc, step=100000.0)
+                ibc_proyeccion = val_ibc
+                costo_mensual = val_ibc * 0.16
+                estrategia_texto = f"Independiente (IBC: ${val_ibc:,.0f})"
+            else:
+                st.info(f"**IBC Actual como Dependiente:** ${ultimo_ibc:,.0f}\n\n*(El empleador asume la cotización sobre este valor)*")
+                val_extra = st.number_input("IBC Extra como Independiente", value=1000000.0, step=100000.0)
+                ibc_proyeccion = ultimo_ibc + val_extra
+                costo_mensual = val_extra * 0.16
+                estrategia_texto = f"Dependiente (${ultimo_ibc:,.0f}) + Extra Indep. (${val_extra:,.0f})"
+
             anios = st.slider("Años proyectados a cotizar", 1, 15, 5)
             
-            # Tasa de aporte para pensión general = 16%
-            porcentaje_aporte = 0.16 
-            costo_mensual = val * porcentaje_aporte
             costo_anual = costo_mensual * 12
             inv = costo_anual * anios
             
-            st.info(f"Costo Mensual Aproximado: **${costo_mensual:,.0f}**")
-            st.warning(f"Costo Anual: **${costo_anual:,.0f}**")
+            st.success(f"Costo Mensual del Aporte (16%): **${costo_mensual:,.0f}**")
+            st.warning(f"Costo Anual de la Inversión: **${costo_anual:,.0f}**")
             st.metric("INVERSIÓN TOTAL", f"${inv:,.0f}")
 
         with c_res:
             filas = []
             cur = df['Hasta'].max() + timedelta(days=1)
-            nuevo_ibc = val
             
             for _ in range(anios*12):
-                filas.append({"Desde": cur, "Hasta": cur+timedelta(days=30), "IBC": nuevo_ibc, "Semanas": 4.29})
+                filas.append({"Desde": cur, "Hasta": cur+timedelta(days=30), "IBC": ibc_proyeccion, "Semanas": 4.29})
                 cur += timedelta(days=31)
             
             df_fut = pd.concat([df, pd.DataFrame(filas)], ignore_index=True)
@@ -403,7 +406,6 @@ else:
                 m2.metric("Retorno (ROI)", "N/A")
                 m3.error("Sin mejora")
             
-            # Gráficas en UI
             t_g1, t_g2 = st.tabs(["📊 Comparativo Mesadas", "📈 Punto de Equilibrio (ROI)"])
             with t_g1:
                 st.bar_chart(pd.DataFrame({"Mesada": [mesada, mes_f]}, index=["Situación Actual", "Con Proyección"]), color="#27AE60")
@@ -422,7 +424,7 @@ else:
                     st.info("No aplica gráfica de retorno porque la mesada proyectada no supera la mesada actual.")
             
             proyeccion_data = {
-                "estrategia": opcion, "costo_anual": costo_anual, "anios": anios,
+                "estrategia": estrategia_texto, "costo_anual": costo_anual, "anios": anios,
                 "inversion": inv, "mesada_fut": mes_f, "delta": delta, "roi": roi
             }
 
@@ -439,7 +441,6 @@ else:
     }
     perfil = {"nombre": nombre, "fecha_nac": fecha_nac.strftime('%d/%m/%Y')}
     
-    # Solo pasamos la proyección si la casilla está marcada
     docx = generar_reporte_completo(perfil, fechas_clave, liq_data, proyeccion_data if incluir_proyeccion else None)
     
     st.sidebar.download_button(
