@@ -9,7 +9,42 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from data_processor import extraer_tabla_cruda, limpiar_y_estandarizar, aplicar_regla_simultaneidad
 from logic import LiquidadorPension
 
+# ==========================================
+# 1. CONFIGURACIÓN DE PÁGINA (DEBE IR PRIMERO)
+# ==========================================
 st.set_page_config(page_title="Liquidador Pensional Pro", layout="wide", page_icon="⚖️")
+
+# ==========================================
+# 2. SISTEMA DE AUTENTICACIÓN
+# ==========================================
+if 'autenticado' not in st.session_state:
+    st.session_state.autenticado = False
+
+if not st.session_state.autenticado:
+    st.markdown("<h2 style='text-align: center;'>🔒 Acceso al Sistema Pensional</h2>", unsafe_allow_html=True)
+    
+    # Centrar el formulario de login usando columnas
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        with st.form("login_form"):
+            usuario = st.text_input("Usuario")
+            clave = st.text_input("Contraseña", type="password")
+            submit = st.form_submit_button("Ingresar", use_container_width=True)
+            
+            if submit:
+                if usuario == "80799289" and clave == "1808DV":
+                    st.session_state.autenticado = True
+                    st.rerun()  # Recarga la página para mostrar la app
+                else:
+                    st.error("❌ Credenciales incorrectas. Verifica tu usuario y contraseña.")
+                    
+    # st.stop() evita que el resto del código se ejecute si no está autenticado
+    st.stop()
+
+# ==========================================
+# EL RESTO DE TU APLICACIÓN ORIGINAL
+# ==========================================
 
 # --- CSS ---
 st.markdown("""
@@ -140,6 +175,14 @@ with st.sidebar:
     
     st.divider()
     aplicar_tope = st.checkbox("Tope 1800 Semanas", value=True)
+    
+    # Botón para cerrar sesión
+    if st.button("🚪 Cerrar Sesión"):
+        st.session_state.autenticado = False
+        st.session_state.df_crudo = None
+        st.session_state.df_final = None
+        st.rerun()
+        
     if st.button("🔄 Reiniciar"):
         st.session_state.df_crudo = None
         st.session_state.df_final = None
@@ -228,7 +271,7 @@ else:
 
         st.divider()
 
-        # 3. COMPARATIVO IBL (Lo que pediste restaurar)
+        # 3. COMPARATIVO IBL
         st.markdown("#### 🆚 Análisis Comparativo de Ingreso Base (IBL)")
         
         # Visualización Lado a Lado
@@ -250,13 +293,13 @@ else:
             
         st.caption(f"El sistema aplicó automáticamente: **{origen_ibl}** por ser más favorable.")
         
-        # Gráfica Comparativa Restaurada
+        # Gráfica Comparativa
         chart_data = pd.DataFrame({
             "Monto": [ibl_10, ibl_vida]
         }, index=["Últimos 10 Años", "Toda la Vida"])
         st.bar_chart(chart_data, color="#2E86C1")
 
-        # 4. SOPORTES DETALLADOS (Ambos Visibles)
+        # 4. SOPORTES DETALLADOS
         st.markdown("#### 📄 Soportes Técnicos Detallados")
         st.write("Despliega las pestañas para auditar los periodos utilizados en cada cálculo.")
         
@@ -330,7 +373,7 @@ else:
         "semanas": total_sem, "ibl": ibl_def, "origen_ibl": origen_ibl, 
         "tasa": tasa, "mesada": mesada, 
         "ibl_10": ibl_10, "ibl_vida": ibl_vida,
-        "df_soporte_10": det_10, "df_soporte_vida": det_vida  # Enviamos AMBOS soportes
+        "df_soporte_10": det_10, "df_soporte_vida": det_vida 
     }
     
     perfil = {"nombre": nombre, "fecha_nac": fecha_nac.strftime('%d/%m/%Y')}
