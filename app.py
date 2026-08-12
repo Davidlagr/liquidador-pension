@@ -74,17 +74,23 @@ def get_requisitos_estatus(genero, fecha_estatus):
         nota = "Aplica regla general Ley 797/2003 (1300 semanas)."
     else:
         # Femenino
-        if not fecha_estatus or fecha_estatus < date(2026, 1, 1):
+        # Validamos con pd.isna() de Pandas para evitar el TypeError
+        if pd.isna(fecha_estatus):
             semanas_req = 1300
-            nota = "Consolida estatus antes de 2026. Aplica exigencia de 1300 semanas."
+            nota = "Aún no consolida estatus pensional. Aplica exigencia referencial de 1300 semanas."
         else:
-            anio = fecha_estatus.year
-            if anio == 2026:
-                semanas_req = 1250
+            # Convertimos ambas fechas a pd.Timestamp para comparación segura
+            if pd.Timestamp(fecha_estatus) < pd.Timestamp('2026-01-01'):
+                semanas_req = 1300
+                nota = "Consolida estatus antes de 2026. Aplica exigencia de 1300 semanas."
             else:
-                descenso = 50 + ((anio - 2026) * 25)
-                semanas_req = max(1000, 1300 - descenso)
-            nota = f"Consolida estatus en {anio}. Aplica disminución progresiva constitucional."
+                anio = fecha_estatus.year
+                if anio == 2026:
+                    semanas_req = 1250
+                else:
+                    descenso = 50 + ((anio - 2026) * 25)
+                    semanas_req = max(1000, 1300 - descenso)
+                nota = f"Consolida estatus en {anio}. Aplica disminución progresiva constitucional."
 
     return edad_req, semanas_req, nota
 
