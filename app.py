@@ -60,26 +60,52 @@ if 'df_final' not in st.session_state: st.session_state.df_final = None
 SMLMV_ACTUAL_2026 = 1750905.0
 
 # ==========================================
-# FUNCIONES AUXILIARES JURÍDICAS
+# FUNCIONES AUXILIARES JURÍDICAS Y DE LIMPIEZA
 # ==========================================
+def limpiar_valor_ibc_robusto(val):
+    """Detecta y corrige el problema de los puntos como separadores de miles"""
+    if pd.isna(val):
+        return 0.0
+    
+    val_str = str(val).strip().replace('$', '').replace('COP', '').replace(' ', '')
+    if not val_str or val_str.lower() in ['nan', 'none']:
+        return 0.0
+
+    # Si tiene punto y coma (Ej: 1.300.000,50)
+    if ',' in val_str and '.' in val_str:
+        val_str = val_str.replace('.', '').replace(',', '.')
+    
+    # Si solo tiene puntos (Ej: 755.201 o 1.300.000)
+    elif '.' in val_str:
+        partes = val_str.split('.')
+        # Si la última parte tiene exactamente 3 dígitos, es un separador de miles
+        if len(partes) > 1 and len(partes[-1]) == 3:
+            val_str = ''.join(partes)
+            
+    # Si usa coma como decimal o como miles erróneo
+    elif ',' in val_str:
+        partes = val_str.split(',')
+        if len(partes) > 1 and len(partes[-1]) == 3:
+            val_str = ''.join(partes)
+        else:
+            val_str = val_str.replace(',', '.')
+
+    try:
+        return float(val_str)
+    except ValueError:
+        return 0.0
+
 def get_requisitos_estatus(genero, fecha_estatus):
-    """
-    Calcula los requisitos normativos, aplicando la reducción progresiva de semanas
-    para mujeres que consolidan estatus a partir de enero de 2026.
-    """
     edad_req = 62 if genero == "Masculino" else 57
     
     if genero == "Masculino":
         semanas_req = 1300
         nota = "Aplica regla general Ley 797/2003 (1300 semanas)."
     else:
-        # Femenino
-        # Validamos con pd.isna() de Pandas para evitar el TypeError
         if pd.isna(fecha_estatus):
             semanas_req = 1300
             nota = "Aún no consolida estatus pensional. Aplica exigencia referencial de 1300 semanas."
         else:
-            # Convertimos ambas fechas a pd.Timestamp para comparación segura
             if pd.Timestamp(fecha_estatus) < pd.Timestamp('2026-01-01'):
                 semanas_req = 1300
                 nota = "Consolida estatus antes de 2026. Aplica exigencia de 1300 semanas."
@@ -95,9 +121,6 @@ def get_requisitos_estatus(genero, fecha_estatus):
     return edad_req, semanas_req, nota
 
 def desglosar_formula_tasa(ibl, semanas_totales, semanas_req, smlmv_ref):
-    """
-    Desglosa matemáticamente la Tasa de Reemplazo según art. 34 Ley 100 (mod. Ley 797).
-    """
     s = ibl / smlmv_ref if smlmv_ref > 0 else 1
     tasa_base = 65.5 - (0.5 * s)
     tasa_base = max(55.0, min(tasa_base, 65.5))
@@ -315,7 +338,11 @@ if st.session_state.df_final is None:
             cs = c4.selectbox("Semanas", cols, index=len(cols)-1)
             
             if st.button("Procesar"):
-                clean = limpiar_y_estandarizar(df, cd, ch, ci, cs)
+                # INTERVENCIÓN DE LIMPIEZA ROBUSTA PARA EL IBC ANTES DE ESTANDARIZAR
+                df_procesar = df.copy()
+                df_procesar[ci] = df_procesar[ci].apply(limpiar_valor_ibc_robusto)
+                
+                clean = limpiar_y_estandarizar(df_procesar, cd, ch, ci, cs)
                 if not clean.empty:
                     st.session_state.df_final = aplicar_regla_simultaneidad(clean)
                     st.rerun()
