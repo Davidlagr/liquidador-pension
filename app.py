@@ -11,7 +11,7 @@ from data_processor import extraer_tabla_cruda, limpiar_y_estandarizar, aplicar_
 from logic import LiquidadorPension
 
 # ==========================================
-# 1. CONFIGURACIÓN DE PÁGINA (DEBE IR PRIMERO)
+# 1. CONFIGURACIÓN DE PÁGINA
 # ==========================================
 st.set_page_config(page_title="Liquidador Pensional Pro", layout="wide", page_icon="⚖️")
 
@@ -39,10 +39,6 @@ if not st.session_state.autenticado:
                 else:
                     st.error("❌ Credenciales incorrectas. Verifica tu usuario y contraseña.")
     st.stop()
-
-# ==========================================
-# EL RESTO DE TU APLICACIÓN
-# ==========================================
 
 # --- CSS ---
 st.markdown("""
@@ -84,11 +80,7 @@ def generar_reporte_completo(perfil, fechas, liq_data, proyeccion=None):
         "de los Ingresos Base de Cotización (IBC) históricos utilizando el Índice de Precios al Consumidor (IPC) "
         "certificado por el DANE. En virtud del principio de favorabilidad y la jurisprudencia aplicable, se liquidan y comparan dos escenarios: "
         "el promedio de los últimos 10 años cotizados y el promedio de toda la vida laboral del afiliado. "
-        "Se aplica el escenario que resulte más beneficioso.\n\n"
-        "• Tasa de Reemplazo: Se aplica la fórmula decreciente establecida en el artículo 34 de la Ley 100 "
-        "(modificado por el art. 10 de la Ley 797/2003), la cual otorga un porcentaje que varía entre el 65% y el 80% "
-        "dependiendo del nivel de ingresos (en SMLMV) y se incrementa un 1.5% por cada 50 semanas adicionales "
-        "a las mínimas requeridas, hasta llegar al tope legal máximo."
+        "Se aplica el escenario que resulte más beneficioso."
     )
 
     # 2. INFORMACIÓN DEL AFILIADO
@@ -127,23 +119,6 @@ def generar_reporte_completo(perfil, fechas, liq_data, proyeccion=None):
         r[0].text = k
         r[1].text = v
 
-    # 4. GRÁFICA COMPARATIVA IBL
-    doc.add_heading('4. ANÁLISIS GRÁFICO IBL', level=1)
-    fig1, ax1 = plt.subplots(figsize=(6, 3))
-    ax1.bar(["Últimos 10", "Toda Vida"], [liq_data['ibl_10'], liq_data['ibl_vida']], color=['#3498db', '#2ecc71'])
-    ax1.set_title("Comparativo Ingreso Base de Liquidación (IBL)")
-    ax1.yaxis.set_major_formatter('${x:,.0f}')
-    
-    memfile1 = BytesIO()
-    fig1.savefig(memfile1, format='png', bbox_inches='tight')
-    doc.add_picture(memfile1, width=Inches(5))
-    memfile1.close()
-    plt.close(fig1)
-    
-    # 5. TABLAS DE SOPORTE (AMBAS)
-    doc.add_page_break()
-    doc.add_heading('ANEXO 1: DETALLE ÚLTIMOS 10 AÑOS', level=1)
-    
     def agregar_tabla_soporte(df_sop):
         if not df_sop.empty:
             t = doc.add_table(rows=1, cols=3)
@@ -159,66 +134,44 @@ def generar_reporte_completo(perfil, fechas, liq_data, proyeccion=None):
                 rc[1].text = f"${row['IBC_Historico']:,.0f}"
                 rc[2].text = f"${row['IBC_Actualizado']:,.0f}"
 
+    # 4. TABLAS DE SOPORTE ACTUALES
+    doc.add_page_break()
+    doc.add_heading('ANEXO 1: DETALLE ÚLTIMOS 10 AÑOS (ACTUAL)', level=1)
     agregar_tabla_soporte(liq_data['df_soporte_10'])
 
-    doc.add_heading('ANEXO 2: DETALLE TODA LA VIDA', level=1)
+    doc.add_heading('ANEXO 2: DETALLE TODA LA VIDA (ACTUAL)', level=1)
     agregar_tabla_soporte(liq_data['df_soporte_vida'])
 
-    # 6. PROYECCIÓN (SOLO SI FUE APROBADA)
+    # 5. PROYECCIÓN (SOLO SI FUE APROBADA)
     if proyeccion:
         doc.add_page_break()
-        doc.add_heading('5. PROYECCIÓN ESTRATÉGICA DE MEJORA', level=1)
-        doc.add_paragraph("A continuación, se detalla el esquema de viabilidad financiera en caso de optar por realizar cotizaciones proyectadas para mejorar la mesada pensional:")
+        doc.add_heading('4. PROYECCIÓN ESTRATÉGICA DE MEJORA PENSIONAL', level=1)
+        doc.add_paragraph("Esquema de viabilidad financiera liquidando salud (12.5%) y pensión (16%) sobre el 100% del IBC proyectado, con incremento anual estimado del SMLMV:")
         
         t3 = doc.add_table(rows=1, cols=2)
         t3.style = 'Table Grid'
         datos_proy = [
             ("Estrategia / Tipo", proyeccion['estrategia']),
             ("Años Proyectados", f"{proyeccion['anios']} años"),
-            ("Costo Promedio Anual (Solo Indep.)", f"${proyeccion['costo_anual']:,.0f}"),
-            ("INVERSIÓN TOTAL", f"${proyeccion['inversion']:,.0f}"),
+            ("INVERSIÓN TOTAL (Aprox)", f"${proyeccion['inversion']:,.0f}"),
             ("NUEVA MESADA PROYECTADA", f"${proyeccion['mesada_fut']:,.0f}"),
             ("Incremento de Mesada (Delta)", f"${proyeccion['delta']:,.0f} mensuales"),
-            ("Tiempo de Retorno de Inversión (ROI)", f"{proyeccion['roi']:.1f} Años tras pensionarse")
+            ("Tiempo de Retorno (ROI)", f"{proyeccion['roi']:.1f} Años tras pensionarse")
         ]
         for k, v in datos_proy:
             r = t3.add_row().cells
             r[0].text = k
             r[1].text = v
+            
+        doc.add_page_break()
+        doc.add_heading('5. SOPORTES: CÁLCULO DE LA MESADA FUTURA', level=1)
+        doc.add_paragraph(f"Para el cálculo de la mesada futura, el sistema determinó que el escenario más favorable es: {proyeccion['origen_ibl_fut']}.")
+        
+        doc.add_heading('5.1 DETALLE PROYECCIÓN: ÚLTIMOS 10 AÑOS', level=2)
+        agregar_tabla_soporte(proyeccion['det_10_fut'])
 
-        doc.add_paragraph("\nAnálisis Gráfico de Retorno de Inversión (ROI):")
-        
-        # Gráfica Comparativa Mesadas
-        fig_p1, ax_p1 = plt.subplots(figsize=(6, 3))
-        ax_p1.bar(["Mesada Actual", "Mesada Proyectada"], [liq_data['mesada'], proyeccion['mesada_fut']], color=['#e74c3c', '#27ae60'])
-        ax_p1.set_title("Incremento de Mesada Pensional")
-        ax_p1.yaxis.set_major_formatter('${x:,.0f}')
-        mem_p1 = BytesIO()
-        fig_p1.savefig(mem_p1, format='png', bbox_inches='tight')
-        doc.add_picture(mem_p1, width=Inches(5))
-        mem_p1.close()
-        plt.close(fig_p1)
-        
-        # Gráfica Punto de Equilibrio (ROI)
-        fig_p2, ax_p2 = plt.subplots(figsize=(6, 3))
-        anios_max = int(np.ceil(proyeccion['roi'])) + 3 if proyeccion['roi'] > 0 else 10
-        x_anios = np.arange(0, anios_max + 1)
-        y_retorno = x_anios * proyeccion['delta'] * 12
-        
-        ax_p2.plot(x_anios, y_retorno, label='Retorno Acumulado', color='green', marker='o')
-        ax_p2.axhline(y=proyeccion['inversion'], color='red', linestyle='--', label='Costo Total de Inversión')
-        ax_p2.set_title("Línea de Tiempo - Retorno de Inversión (ROI)")
-        ax_p2.set_xlabel("Años tras obtener la pensión")
-        ax_p2.set_ylabel("Capital ($)")
-        ax_p2.yaxis.set_major_formatter('${x:,.0f}')
-        ax_p2.legend()
-        ax_p2.grid(True, linestyle='--', alpha=0.6)
-        
-        mem_p2 = BytesIO()
-        fig_p2.savefig(mem_p2, format='png', bbox_inches='tight')
-        doc.add_picture(mem_p2, width=Inches(5.5))
-        mem_p2.close()
-        plt.close(fig_p2)
+        doc.add_heading('5.2 DETALLE PROYECCIÓN: TODA LA VIDA', level=2)
+        agregar_tabla_soporte(proyeccion['det_vida_fut'])
 
     buffer = BytesIO()
     doc.save(buffer)
@@ -239,11 +192,6 @@ with st.sidebar:
     
     if st.button("🚪 Cerrar Sesión"):
         st.session_state.autenticado = False
-        st.session_state.df_crudo = None
-        st.session_state.df_final = None
-        st.rerun()
-        
-    if st.button("🔄 Reiniciar App"):
         st.session_state.df_crudo = None
         st.session_state.df_final = None
         st.rerun()
@@ -274,14 +222,12 @@ if st.session_state.df_final is None:
                 if not clean.empty:
                     st.session_state.df_final = aplicar_regla_simultaneidad(clean)
                     st.rerun()
-                else: st.error("Error columnas")
 
 else:
     df = st.session_state.df_final
     liq = LiquidadorPension(df, genero, fecha_nac)
     
     fechas_clave = liq.determinar_fechas_clave()
-    
     ibl_10, det_10 = liq.calcular_ibl_indexado(fechas_clave['fecha_corte'], "ultimos_10")
     ibl_vida, det_vida = liq.calcular_ibl_indexado(fechas_clave['fecha_corte'], "toda_vida")
     
@@ -297,142 +243,107 @@ else:
     
     with tab1:
         st.subheader(f"Dictamen de Estatus: {nombre}")
-        
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            st.markdown(f"""
-            <div class='info-box'>
-                <b>Fecha Cumplimiento Edad:</b> {fechas_clave['fecha_cumple_edad'].strftime('%d/%m/%Y')}<br>
-                <b>Fecha Cumplimiento Semanas:</b> {fechas_clave['fecha_cumple_semanas'].strftime('%d/%m/%Y') if fechas_clave['fecha_cumple_semanas'] else 'No cumplido'}<br>
-                <b>FECHA DE ESTATUS:</b> {fechas_clave['fecha_estatus'].strftime('%d/%m/%Y') if fechas_clave['tiene_estatus'] else 'PENDIENTE'}
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with col_f2:
-            st.markdown(f"""
-            <div class='info-box' style='border-color: #e67e22; background-color: #fcf3cf;'>
-                <b>FECHA DE CORTE (INDEXACIÓN):</b> {fechas_clave['fecha_corte'].strftime('%d/%m/%Y')}<br>
-                <b>Razón:</b> {fechas_clave['razon_corte']}<br>
-                <b>FECHA EFECTIVIDAD:</b> {fechas_clave['fecha_efectividad'].strftime('%d/%m/%Y')}
-            </div>
-            """, unsafe_allow_html=True)
-            
-        st.divider()
-        
         c1, c2, c3 = st.columns(3)
         c1.metric("Semanas Totales", f"{total_sem:,.2f}")
         c2.metric("Mesada Pensional", f"${mesada:,.0f}")
         c3.metric("Tasa Reemplazo", f"{tasa:.2f}%")
-
         st.divider()
-
-        st.markdown("#### 🆚 Análisis Comparativo de Ingreso Base (IBL)")
-        col_ibl_L, col_ibl_R = st.columns(2)
-        with col_ibl_L:
-            st.markdown(f"""<div class='ibl-box'><h4>Últimos 10 Años</h4><h2>${ibl_10:,.0f}</h2></div>""", unsafe_allow_html=True)
-        with col_ibl_R:
-             st.markdown(f"""<div class='ibl-box'><h4>Toda la Vida</h4><h2>${ibl_vida:,.0f}</h2></div>""", unsafe_allow_html=True)
-            
-        st.caption(f"El sistema aplicó automáticamente: **{origen_ibl}** por ser más favorable.")
-        chart_data = pd.DataFrame({"Monto": [ibl_10, ibl_vida]}, index=["Últimos 10 Años", "Toda la Vida"])
-        st.bar_chart(chart_data, color="#2E86C1")
-
-        st.markdown("#### 📄 Soportes Técnicos Detallados")
-        col_det_1, col_det_2 = st.columns(2)
-        with col_det_1:
-            with st.expander("🔍 Ver Detalle Últimos 10 Años"):
-                st.dataframe(det_10.style.format({'IBC_Historico': "${:,.0f}", 'IBC_Actualizado': "${:,.0f}", 'Factor_IPC': "{:.4f}"}))
-        with col_det_2:
-            with st.expander("🌍 Ver Detalle Toda la Vida"):
-                st.dataframe(det_vida.style.format({'IBC_Historico': "${:,.0f}", 'IBC_Actualizado': "${:,.0f}", 'Factor_IPC': "{:.4f}"}))
 
     # --- PESTAÑA 2: PROYECCIÓN Y ROI ---
     with tab2:
-        st.subheader("Simulación Financiera y Retorno de Inversión (ROI)")
+        st.subheader("Simulación Financiera de Mejora Pensional")
         c_conf, c_res = st.columns([1, 2])
         
         with c_conf:
-            st.markdown("**Configuración del Escenario**")
-            opcion = st.radio("Modalidad de Cotización", ["Cotizante Independiente", "Dependiente + Extra Independiente"])
-            ultimo_ibc = float(df['IBC'].iloc[-1]) if not df.empty else 1300000.0
+            st.markdown("### Parámetros de Inversión")
+            st.info("💡 **Criterio Técnico:** Para esta estrategia se asume el pago de Salud (12.5%) y Pensión (16%) sobre el **100% del IBC**, omitiendo la presunción del 40% para independientes, con el fin de maximizar los aportes a la historia laboral.")
             
-            if opcion == "Cotizante Independiente":
-                val_ibc = st.number_input("Ingreso Base de Cotización (IBC) Mensual", value=ultimo_ibc, step=100000.0)
-                ibc_proyeccion = val_ibc
-                costo_mensual = val_ibc * 0.16
-                estrategia_texto = f"Independiente (IBC: ${val_ibc:,.0f})"
-            else:
-                st.info(f"**IBC Actual como Dependiente:** ${ultimo_ibc:,.0f}\n\n*(El empleador asume la cotización sobre este valor)*")
-                val_extra = st.number_input("IBC Extra como Independiente", value=1000000.0, step=100000.0)
-                ibc_proyeccion = ultimo_ibc + val_extra
-                costo_mensual = val_extra * 0.16
-                estrategia_texto = f"Dependiente (${ultimo_ibc:,.0f}) + Extra Indep. (${val_extra:,.0f})"
-
-            anios = st.slider("Años proyectados a cotizar", 1, 15, 5)
+            smlmv_actual = st.number_input("SMLMV Año Actual Base", value=1300000.0, step=100000.0)
+            smlmv_deseados = st.number_input("IBC Deseado (En SMLMV)", min_value=1.0, max_value=25.0, value=5.0, step=0.5)
+            anios_proy = st.slider("Años a realizar el aporte", 1, 15, 5)
+            incremento_anual_smlmv = st.number_input("Est. Aumento Anual SMLMV (%)", value=5.0, step=0.5) / 100.0
             
-            costo_anual = costo_mensual * 12
-            inv = costo_anual * anios
+            # Muestra costo referencial del primer año
+            ibc_ref_ano_1 = smlmv_actual * smlmv_deseados
+            costo_mes_ano_1 = ibc_ref_ano_1 * 0.285
             
-            st.success(f"Costo Mensual del Aporte (16%): **${costo_mensual:,.0f}**")
-            st.warning(f"Costo Anual de la Inversión: **${costo_anual:,.0f}**")
-            st.metric("INVERSIÓN TOTAL", f"${inv:,.0f}")
+            st.success(f"**Referencia Año 1:**\nIBC: ${ibc_ref_ano_1:,.0f}\nCosto Aporte Mensual: ${costo_mes_ano_1:,.0f}")
 
         with c_res:
-            filas = []
+            filas_fut = []
             cur = df['Hasta'].max() + timedelta(days=1)
+            inversion_total = 0
             
-            for _ in range(anios*12):
-                filas.append({"Desde": cur, "Hasta": cur+timedelta(days=30), "IBC": ibc_proyeccion, "Semanas": 4.29})
+            # Bucle para proyectar mes a mes incrementando el SMLMV año a año
+            for m in range(anios_proy * 12):
+                year_offset = m // 12
+                # Interés compuesto para proyectar el SMLMV en el futuro
+                smlmv_periodo = smlmv_actual * ((1 + incremento_anual_smlmv) ** year_offset)
+                ibc_periodo = smlmv_deseados * smlmv_periodo
+                
+                # El costo es el 28.5% (16% pensión + 12.5% salud) sobre el 100% del IBC
+                costo_mes = ibc_periodo * 0.285
+                inversion_total += costo_mes
+                
+                filas_fut.append({
+                    "Desde": cur, 
+                    "Hasta": cur + timedelta(days=30), 
+                    "IBC": ibc_periodo, 
+                    "Semanas": 4.29
+                })
                 cur += timedelta(days=31)
             
-            df_fut = pd.concat([df, pd.DataFrame(filas)], ignore_index=True)
+            df_fut = pd.concat([df, pd.DataFrame(filas_fut)], ignore_index=True)
             liq_f = LiquidadorPension(df_fut, genero, fecha_nac)
             
             fechas_fut = liq_f.determinar_fechas_clave()
-            ibl_f = max(liq_f.calcular_ibl_indexado(fechas_fut['fecha_corte'], "ultimos_10")[0], 
-                        liq_f.calcular_ibl_indexado(fechas_fut['fecha_corte'], "toda_vida")[0])
             
-            mes_f, tasa_f, _ = liq_f.calcular_tasa_reemplazo_797(ibl_f, df_fut['Semanas'].sum(), datetime.now().year+anios, aplicar_tope)
+            # Obtención de ambos soportes futuros
+            ibl_10_fut, det_10_fut = liq_f.calcular_ibl_indexado(fechas_fut['fecha_corte'], "ultimos_10")
+            ibl_vida_fut, det_vida_fut = liq_f.calcular_ibl_indexado(fechas_fut['fecha_corte'], "toda_vida")
+            
+            ibl_f = max(ibl_10_fut, ibl_vida_fut)
+            origen_ibl_fut = "Últimos 10 Años" if ibl_10_fut >= ibl_vida_fut else "Toda la Vida"
+            
+            mes_f, tasa_f, _ = liq_f.calcular_tasa_reemplazo_797(ibl_f, df_fut['Semanas'].sum(), datetime.now().year + anios_proy, aplicar_tope)
             
             delta = mes_f - mesada
-            roi = (inv / (delta * 12)) if delta > 0 else 0
+            roi = (inversion_total / (delta * 12)) if delta > 0 else 0
             
+            st.markdown("### Resultados de la Proyección")
             m1, m2, m3 = st.columns(3)
             m1.metric("Nueva Mesada", f"${mes_f:,.0f}", f"+ ${delta:,.0f} mes")
+            m2.metric("Inversión Total", f"${inversion_total:,.0f}")
             if roi > 0: 
-                m2.metric("Retorno (ROI)", f"{roi:.1f} años")
-                m3.success("Viable")
+                m3.metric("Retorno (ROI)", f"{roi:.1f} años")
             else: 
-                m2.metric("Retorno (ROI)", "N/A")
                 m3.error("Sin mejora")
-            
-            t_g1, t_g2 = st.tabs(["📊 Comparativo Mesadas", "📈 Punto de Equilibrio (ROI)"])
-            with t_g1:
-                st.bar_chart(pd.DataFrame({"Mesada": [mesada, mes_f]}, index=["Situación Actual", "Con Proyección"]), color="#27AE60")
-            with t_g2:
-                if roi > 0:
-                    anios_graf = int(np.ceil(roi)) + 3
-                    x_arr = np.arange(0, anios_graf + 1)
-                    y_arr = x_arr * delta * 12
-                    df_roi = pd.DataFrame({
-                        "Años": x_arr,
-                        "Retorno Acumulado ($)": y_arr,
-                        "Costo Inversión ($)": [inv] * len(x_arr)
-                    }).set_index("Años")
-                    st.line_chart(df_roi)
-                else:
-                    st.info("No aplica gráfica de retorno porque la mesada proyectada no supera la mesada actual.")
+                
+            st.caption(f"**Escenario aplicado para liquidación futura:** {origen_ibl_fut}")
+
+            t_d1, t_d2 = st.tabs(["📑 Detalle 10 Años (Proyectado)", "📑 Detalle Toda la Vida (Proyectado)"])
+            with t_d1:
+                st.dataframe(det_10_fut.style.format({'IBC_Historico': "${:,.0f}", 'IBC_Actualizado': "${:,.0f}"}))
+            with t_d2:
+                st.dataframe(det_vida_fut.style.format({'IBC_Historico': "${:,.0f}", 'IBC_Actualizado': "${:,.0f}"}))
             
             proyeccion_data = {
-                "estrategia": estrategia_texto, "costo_anual": costo_anual, "anios": anios,
-                "inversion": inv, "mesada_fut": mes_f, "delta": delta, "roi": roi
+                "estrategia": f"Aporte sobre {smlmv_deseados} SMLMV (100% IBC)", 
+                "anios": anios_proy,
+                "inversion": inversion_total, 
+                "mesada_fut": mes_f, 
+                "delta": delta, 
+                "roi": roi,
+                "origen_ibl_fut": origen_ibl_fut,
+                "det_10_fut": det_10_fut,
+                "det_vida_fut": det_vida_fut
             }
 
     # --- BOTÓN WORD Y APROBACIÓN ---
     st.sidebar.markdown("---")
     st.sidebar.subheader("📄 Generación de Informe")
     
-    incluir_proyeccion = st.sidebar.checkbox("✅ Aprobar e Incluir Proyección de Mejora al Dictamen", value=False)
+    incluir_proyeccion = st.sidebar.checkbox("✅ Aprobar e Incluir Proyección al Dictamen", value=False)
     
     liq_data = {
         "semanas": total_sem, "ibl": ibl_def, "origen_ibl": origen_ibl, 
