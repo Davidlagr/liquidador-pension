@@ -258,7 +258,7 @@ else:
             st.markdown("### Parámetros de Inversión")
             st.info("💡 **Criterio Técnico:** Para esta estrategia se asume el pago de Salud (12.5%) y Pensión (16%) sobre el **100% del IBC**, omitiendo la presunción del 40% para independientes, con el fin de maximizar los aportes a la historia laboral.")
             
-            smlmv_actual = st.number_input("SMLMV Año Actual Base", value=1300000.0, step=100000.0)
+            smlmv_actual = st.number_input("SMLMV Año Actual Base", value=1750905.0, step=100000.0)
             smlmv_deseados = st.number_input("IBC Deseado (En SMLMV)", min_value=1.0, max_value=25.0, value=5.0, step=0.5)
             anios_proy = st.slider("Años a realizar el aporte", 1, 15, 5)
             incremento_anual_smlmv = st.number_input("Est. Aumento Anual SMLMV (%)", value=5.0, step=0.5) / 100.0
