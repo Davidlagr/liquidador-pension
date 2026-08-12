@@ -47,19 +47,70 @@ st.markdown("""
     .ibl-box { background-color: #f4f6f7; padding: 10px; border-radius: 5px; border: 1px solid #d5dbdb; text-align: center; }
     .status-ok { color: #27ae60; font-weight: bold; }
     .status-alert { color: #d35400; font-weight: bold; }
+    .formula-box { background-color: #fef9e7; padding: 15px; border-radius: 8px; border-left: 5px solid #f1c40f; margin-top: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("⚖️ Liquidador Pensional: Análisis Técnico & Jurídico")
 
-# --- ESTADO ---
+# --- ESTADO Y VARIABLES GLOBALES ---
 if 'df_crudo' not in st.session_state: st.session_state.df_crudo = None
 if 'df_final' not in st.session_state: st.session_state.df_final = None
+
+SMLMV_ACTUAL_2026 = 1750905.0
+
+# ==========================================
+# FUNCIONES AUXILIARES JURÍDICAS
+# ==========================================
+def get_requisitos_estatus(genero, fecha_estatus):
+    """
+    Calcula los requisitos normativos, aplicando la reducción progresiva de semanas
+    para mujeres que consolidan estatus a partir de enero de 2026.
+    """
+    edad_req = 62 if genero == "Masculino" else 57
+    
+    if genero == "Masculino":
+        semanas_req = 1300
+        nota = "Aplica regla general Ley 797/2003 (1300 semanas)."
+    else:
+        # Femenino
+        if not fecha_estatus or fecha_estatus < date(2026, 1, 1):
+            semanas_req = 1300
+            nota = "Consolida estatus antes de 2026. Aplica exigencia de 1300 semanas."
+        else:
+            anio = fecha_estatus.year
+            if anio == 2026:
+                semanas_req = 1250
+            else:
+                descenso = 50 + ((anio - 2026) * 25)
+                semanas_req = max(1000, 1300 - descenso)
+            nota = f"Consolida estatus en {anio}. Aplica disminución progresiva constitucional."
+
+    return edad_req, semanas_req, nota
+
+def desglosar_formula_tasa(ibl, semanas_totales, semanas_req, smlmv_ref):
+    """
+    Desglosa matemáticamente la Tasa de Reemplazo según art. 34 Ley 100 (mod. Ley 797).
+    """
+    s = ibl / smlmv_ref if smlmv_ref > 0 else 1
+    tasa_base = 65.5 - (0.5 * s)
+    tasa_base = max(55.0, min(tasa_base, 65.5))
+    
+    semanas_adicionales = max(0, semanas_totales - semanas_req)
+    bloques_50 = int(semanas_adicionales // 50)
+    incremento = bloques_50 * 1.5
+    
+    tasa_final = min(80.0, tasa_base + incremento)
+    
+    return {
+        "s": s, "tasa_base": tasa_base, "semanas_adicionales": semanas_adicionales,
+        "bloques": bloques_50, "incremento": incremento, "tasa_final": tasa_final
+    }
 
 # ==========================================
 # GENERADOR DE REPORTE WORD
 # ==========================================
-def generar_reporte_completo(perfil, fechas, liq_data, proyeccion=None):
+def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None):
     doc = Document()
     style = doc.styles['Normal']
     style.font.name = 'Arial'
@@ -74,67 +125,91 @@ def generar_reporte_completo(perfil, fechas, liq_data, proyeccion=None):
     # 1. MARCO NORMATIVO
     doc.add_heading('1. MARCO NORMATIVO Y METODOLÓGICO', level=1)
     doc.add_paragraph(
-        "El presente análisis técnico-jurídico se fundamenta en los parámetros de la Ley 100 de 1993, "
-        "con las modificaciones introducidas por la Ley 797 de 2003.\n\n"
-        "• Cálculo del Ingreso Base de Liquidación (IBL): Se realiza la actualización (indexación) "
-        "de los Ingresos Base de Cotización (IBC) históricos utilizando el Índice de Precios al Consumidor (IPC) "
-        "certificado por el DANE. En virtud del principio de favorabilidad y la jurisprudencia aplicable, se liquidan y comparan dos escenarios: "
-        "el promedio de los últimos 10 años cotizados y el promedio de toda la vida laboral del afiliado. "
-        "Se aplica el escenario que resulte más beneficioso."
+        "El presente análisis técnico-jurídico se fundamenta en los parámetros de la Ley 100 de 1993 y las "
+        "modificaciones introducidas por la Ley 797 de 2003.\n\n"
+        "• Cálculo IBL: Indexación de los IBC históricos utilizando el IPC del DANE, comparando "
+        "los últimos 10 años cotizados frente a toda la vida laboral (Principio de Favorabilidad).\n\n"
+        "• Reducción de Semanas (Mujeres): En acatamiento a la jurisprudencia constitucional (Sentencia C-197/23), "
+        "se aplica la disminución progresiva del número de semanas exigidas para las mujeres que consoliden "
+        "su estatus pensional a partir del 1° de enero de 2026."
     )
 
-    # 2. INFORMACIÓN DEL AFILIADO
-    doc.add_heading('2. ESTATUS JURÍDICO', level=1)
-    table = doc.add_table(rows=1, cols=2)
-    table.style = 'Table Grid'
-    
-    datos = [
+    # 2. REQUISITOS DEL AFILIADO
+    doc.add_heading('2. REQUISITOS PARA EL ESTATUS', level=1)
+    t_req = doc.add_table(rows=1, cols=2)
+    t_req.style = 'Table Grid'
+    for k, v in [("Edad Exigida", f"{req_data['edad']} años"), ("Semanas Exigidas", f"{req_data['semanas']}"), ("Fundamento", req_data['nota'])]:
+        r = t_req.add_row().cells
+        r[0].text, r[1].text = k, str(v)
+
+    # 3. ESTATUS
+    doc.add_heading('3. CONSOLIDACIÓN DEL DERECHO', level=1)
+    t_est = doc.add_table(rows=1, cols=2)
+    t_est.style = 'Table Grid'
+    for k, v in [
         ("Afiliado", perfil['nombre']),
-        ("Fecha Nacimiento", perfil['fecha_nac']),
         ("Cumplimiento Edad", fechas['fecha_cumple_edad'].strftime('%d/%m/%Y')),
         ("Cumplimiento Semanas", fechas['fecha_cumple_semanas'].strftime('%d/%m/%Y') if fechas['fecha_cumple_semanas'] else "No cumplido"),
-        ("FECHA ESTATUS", fechas['fecha_estatus'].strftime('%d/%m/%Y') if fechas['tiene_estatus'] else "NO ADQUIRIDO"),
+        ("FECHA ESTATUS PENSIONAL", fechas['fecha_estatus'].strftime('%d/%m/%Y') if fechas['tiene_estatus'] else "NO ADQUIRIDO"),
         ("FECHA CORTE (INDEXACIÓN)", fechas['fecha_corte'].strftime('%d/%m/%Y')),
-    ]
-    for k, v in datos:
-        r = table.add_row().cells
-        r[0].text = k
-        r[1].text = str(v)
+    ]:
+        r = t_est.add_row().cells
+        r[0].text, r[1].text = k, str(v)
 
-    # 3. LIQUIDACIÓN
-    doc.add_heading('3. RESULTADO DE LA LIQUIDACIÓN ACTUAL', level=1)
+    # 4. LIQUIDACIÓN ACTUAL Y GRÁFICAS
+    doc.add_page_break()
+    doc.add_heading('4. RESULTADO DE LA LIQUIDACIÓN ACTUAL', level=1)
+    
     t2 = doc.add_table(rows=1, cols=2)
     t2.style = 'Light Shading Accent 1'
-    
-    res_data = [
+    for k, v in [
         ("Semanas Totales", f"{liq_data['semanas']:,.2f}"),
         ("IBL 10 Años", f"${liq_data['ibl_10']:,.0f}"),
         ("IBL Toda la Vida", f"${liq_data['ibl_vida']:,.0f}"),
         ("IBL APLICADO", f"${liq_data['ibl']:,.0f} ({liq_data['origen_ibl']})"),
-        ("Tasa Reemplazo", f"{liq_data['tasa']:.2f}%"),
+        ("Tasa Reemplazo Aplicada", f"{liq_data['tasa']:.2f}%"),
         ("MESADA PENSIONAL", f"${liq_data['mesada']:,.0f}")
-    ]
-    for k, v in res_data:
+    ]:
         r = t2.add_row().cells
-        r[0].text = k
-        r[1].text = v
+        r[0].text, r[1].text = k, v
+
+    # Gráfica Comparativa IBL
+    fig_ibl, ax_ibl = plt.subplots(figsize=(5, 3))
+    ax_ibl.bar(["Últimos 10", "Toda Vida"], [liq_data['ibl_10'], liq_data['ibl_vida']], color=['#3498db', '#2ecc71'])
+    ax_ibl.set_title("Comparativo Ingreso Base de Liquidación (IBL)")
+    ax_ibl.yaxis.set_major_formatter('${x:,.0f}')
+    mem_ibl = BytesIO()
+    fig_ibl.savefig(mem_ibl, format='png', bbox_inches='tight')
+    doc.add_paragraph("\n")
+    doc.add_picture(mem_ibl, width=Inches(4.5))
+    mem_ibl.close()
+    plt.close(fig_ibl)
+
+    # Desglose Tasa
+    doc.add_heading('4.1 FÓRMULA DE TASA DE REEMPLAZO', level=2)
+    f_data = liq_data['formula_tasa']
+    doc.add_paragraph(
+        f"1. Cálculo SMLMV del IBL (s): {f_data['s']:.2f} salarios mínimos.\n"
+        f"2. Tasa Base [65.5 - (0.5 * s)]: {f_data['tasa_base']:.2f}%\n"
+        f"3. Semanas Adicionales ({liq_data['semanas']:,.2f} - {req_data['semanas']}): {f_data['semanas_adicionales']:.2f}\n"
+        f"4. Bloques de 50 semanas: {f_data['bloques']}\n"
+        f"5. Incremento en Tasa ({f_data['bloques']} x 1.5%): +{f_data['incremento']:.2f}%\n"
+        f"6. TASA FINAL (Tope Legal 80%): {f_data['tasa_final']:.2f}%"
+    )
 
     def agregar_tabla_soporte(df_sop):
         if not df_sop.empty:
             t = doc.add_table(rows=1, cols=3)
             t.style = 'Table Grid'
             h = t.rows[0].cells
-            h[0].text = 'Periodo'; h[1].text = 'IBC Histórico'; h[2].text = 'IBC Actualizado'
+            h[0].text, h[1].text, h[2].text = 'Periodo', 'IBC Histórico', 'IBC Actualizado'
             
-            filas_mostrar = pd.concat([df_sop.head(50), df_sop.tail(10)]) if len(df_sop) > 60 else df_sop
-            
+            filas_mostrar = pd.concat([df_sop.head(30), df_sop.tail(10)]) if len(df_sop) > 40 else df_sop
             for _, row in filas_mostrar.iterrows():
                 rc = t.add_row().cells
                 rc[0].text = f"{row['Desde'].strftime('%m/%Y')} - {row['Hasta'].strftime('%m/%Y')}"
-                rc[1].text = f"${row['IBC_Historico']:,.0f}"
-                rc[2].text = f"${row['IBC_Actualizado']:,.0f}"
+                rc[1].text, rc[2].text = f"${row['IBC_Historico']:,.0f}", f"${row['IBC_Actualizado']:,.0f}"
 
-    # 4. TABLAS DE SOPORTE ACTUALES
     doc.add_page_break()
     doc.add_heading('ANEXO 1: DETALLE ÚLTIMOS 10 AÑOS (ACTUAL)', level=1)
     agregar_tabla_soporte(liq_data['df_soporte_10'])
@@ -142,35 +217,46 @@ def generar_reporte_completo(perfil, fechas, liq_data, proyeccion=None):
     doc.add_heading('ANEXO 2: DETALLE TODA LA VIDA (ACTUAL)', level=1)
     agregar_tabla_soporte(liq_data['df_soporte_vida'])
 
-    # 5. PROYECCIÓN (SOLO SI FUE APROBADA)
+    # 5. PROYECCIÓN
     if proyeccion:
         doc.add_page_break()
-        doc.add_heading('4. PROYECCIÓN ESTRATÉGICA DE MEJORA PENSIONAL', level=1)
-        doc.add_paragraph("Esquema de viabilidad financiera liquidando salud (12.5%) y pensión (16%) sobre el 100% del IBC proyectado, con incremento anual estimado del SMLMV. (Nota: Para cotizantes dependientes, la inversión solo refleja el aporte extra como independiente).")
+        doc.add_heading('5. PROYECCIÓN ESTRATÉGICA DE MEJORA PENSIONAL', level=1)
+        doc.add_paragraph("Esquema de viabilidad financiera liquidando salud (12.5%) y pensión (16%) sobre el 100% del IBC proyectado. "
+                          "El sistema proyecta el SMLMV futuro aplicando la tasa de aumento anual estimada mediante interés compuesto.")
         
         t3 = doc.add_table(rows=1, cols=2)
         t3.style = 'Table Grid'
-        datos_proy = [
-            ("Estrategia / Tipo", proyeccion['estrategia']),
+        for k, v in [
+            ("Perfil de Cotizante", proyeccion['estrategia']),
             ("Años Proyectados", f"{proyeccion['anios']} años"),
-            ("INVERSIÓN TOTAL", f"${proyeccion['inversion']:,.0f}"),
+            ("INVERSIÓN TOTAL DE BOLSILLO", f"${proyeccion['inversion']:,.0f}"),
             ("NUEVA MESADA PROYECTADA", f"${proyeccion['mesada_fut']:,.0f}"),
             ("Incremento de Mesada (Delta)", f"${proyeccion['delta']:,.0f} mensuales"),
             ("Tiempo de Retorno (ROI)", f"{proyeccion['roi']:.1f} Años tras pensionarse")
-        ]
-        for k, v in datos_proy:
+        ]:
             r = t3.add_row().cells
-            r[0].text = k
-            r[1].text = v
+            r[0].text, r[1].text = k, str(v)
+
+        # Gráfica Proyección Mesada
+        fig_p1, ax_p1 = plt.subplots(figsize=(5, 3))
+        ax_p1.bar(["Actual", "Proyectada"], [liq_data['mesada'], proyeccion['mesada_fut']], color=['#e74c3c', '#27ae60'])
+        ax_p1.set_title("Incremento de Mesada Pensional")
+        ax_p1.yaxis.set_major_formatter('${x:,.0f}')
+        mem_p1 = BytesIO()
+        fig_p1.savefig(mem_p1, format='png', bbox_inches='tight')
+        doc.add_paragraph("\n")
+        doc.add_picture(mem_p1, width=Inches(4.5))
+        mem_p1.close()
+        plt.close(fig_p1)
             
         doc.add_page_break()
-        doc.add_heading('5. SOPORTES: CÁLCULO DE LA MESADA FUTURA', level=1)
-        doc.add_paragraph(f"Para el cálculo de la mesada futura, el sistema determinó que el escenario más favorable es: {proyeccion['origen_ibl_fut']}.")
+        doc.add_heading('5.1 SOPORTES: CÁLCULO DE LA MESADA FUTURA', level=2)
+        doc.add_paragraph(f"Escenario más favorable aplicado para el futuro: {proyeccion['origen_ibl_fut']}.")
         
-        doc.add_heading('5.1 DETALLE PROYECCIÓN: ÚLTIMOS 10 AÑOS', level=2)
+        doc.add_heading('DETALLE PROYECCIÓN: ÚLTIMOS 10 AÑOS', level=3)
         agregar_tabla_soporte(proyeccion['det_10_fut'])
 
-        doc.add_heading('5.2 DETALLE PROYECCIÓN: TODA LA VIDA', level=2)
+        doc.add_heading('DETALLE PROYECCIÓN: TODA LA VIDA', level=3)
         agregar_tabla_soporte(proyeccion['det_vida_fut'])
 
     buffer = BytesIO()
@@ -245,20 +331,37 @@ else:
     mesada, tasa, info = liq.calcular_tasa_reemplazo_797(
         ibl_def, total_sem, datetime.now().year, aplicar_tope
     )
+    
+    # Calcular requisitos normativos y fórmula para UI
+    edad_req, semanas_req, nota_req = get_requisitos_estatus(genero, fechas_clave['fecha_estatus'])
+    formula_tasa = desglosar_formula_tasa(ibl_def, total_sem, semanas_req, SMLMV_ACTUAL_2026)
 
     tab1, tab2 = st.tabs(["📊 DIAGNÓSTICO JURÍDICO", "📈 PROYECCIÓN DE MEJORA"])
     
-    # --- PESTAÑA 1: DIAGNÓSTICO JURÍDICO (RESTAURADA) ---
+    # --- PESTAÑA 1: DIAGNÓSTICO JURÍDICO ---
     with tab1:
         st.subheader(f"Dictamen de Estatus: {nombre}")
         
+        # Bloque de Requisitos Normativos
+        st.markdown(f"""
+        <div style='background-color: #f5eef8; padding: 10px; border-radius: 5px; border-left: 4px solid #8e44ad; margin-bottom: 15px;'>
+            <b>📌 Requisitos Normativos para el Afiliado:</b><br>
+            Edad Exigida: <b>{edad_req} años</b> | Semanas Exigidas: <b>{semanas_req}</b><br>
+            <i>{nota_req}</i>
+        </div>
+        """, unsafe_allow_html=True)
+        
         col_f1, col_f2 = st.columns(2)
         with col_f1:
+            estado_texto = 'PENDIENTE (REQUISITOS NO CUMPLIDOS)'
+            if fechas_clave['tiene_estatus']:
+                estado_texto = f"{fechas_clave['fecha_estatus'].strftime('%d/%m/%Y')} ✅"
+                
             st.markdown(f"""
             <div class='info-box'>
                 <b>Fecha Cumplimiento Edad:</b> {fechas_clave['fecha_cumple_edad'].strftime('%d/%m/%Y')}<br>
                 <b>Fecha Cumplimiento Semanas:</b> {fechas_clave['fecha_cumple_semanas'].strftime('%d/%m/%Y') if fechas_clave['fecha_cumple_semanas'] else 'No cumplido'}<br>
-                <b>FECHA DE ESTATUS:</b> {fechas_clave['fecha_estatus'].strftime('%d/%m/%Y') if fechas_clave['tiene_estatus'] else 'PENDIENTE (REQUISITOS NO CUMPLIDOS)'}
+                <b>FECHA DE ESTATUS:</b> {estado_texto}
             </div>
             """, unsafe_allow_html=True)
             
@@ -276,7 +379,22 @@ else:
         c1, c2, c3 = st.columns(3)
         c1.metric("Semanas Totales", f"{total_sem:,.2f}")
         c2.metric("Mesada Pensional", f"${mesada:,.0f}")
-        c3.metric("Tasa Reemplazo", f"{tasa:.2f}%")
+        c3.metric("Tasa Reemplazo Aplicada", f"{tasa:.2f}%")
+
+        # Desglose de la Fórmula Tasa Reemplazo
+        with st.expander("📐 Ver fórmula de cálculo de la Tasa de Reemplazo"):
+            st.markdown(f"""
+            <div class='formula-box'>
+                <strong>1. Cálculo Base (Art. 34 Ley 100):</strong><br>
+                • SMLMV del IBL (s): {formula_tasa['s']:.2f} salarios<br>
+                • Tasa Base [65.5 - (0.5 * s)]: <b>{formula_tasa['tasa_base']:.2f}%</b><br><br>
+                <strong>2. Incremento por Semanas Adicionales:</strong><br>
+                • Semanas Adicionales ({total_sem:,.2f} totales - {semanas_req} exigidas): {formula_tasa['semanas_adicionales']:.2f}<br>
+                • Bloques de 50 semanas: {formula_tasa['bloques']}<br>
+                • Incremento ({formula_tasa['bloques']} x 1.5%): <b>+{formula_tasa['incremento']:.2f}%</b><br><br>
+                <strong>3. Tasa Final (Tope 80%): <b>{formula_tasa['tasa_final']:.2f}%</b></strong>
+            </div>
+            """, unsafe_allow_html=True)
 
         st.divider()
 
@@ -300,7 +418,6 @@ else:
             with st.expander("🌍 Ver Detalle Toda la Vida (Actual)"):
                 st.dataframe(det_vida.style.format({'IBC_Historico': "${:,.0f}", 'IBC_Actualizado': "${:,.0f}", 'Factor_IPC': "{:.4f}"}))
 
-
     # --- PESTAÑA 2: PROYECCIÓN Y ROI ---
     with tab2:
         st.subheader("Simulación Financiera de Mejora Pensional")
@@ -310,35 +427,33 @@ else:
             st.markdown("### Parámetros de Inversión")
             opcion = st.radio("Perfil de Cotizante", ["Cotizante Independiente", "Dependiente + Extra Independiente"])
             
-            smlmv_actual = st.number_input("SMLMV Año Actual Base", value=1750905.0, step=100000.0)
+            smlmv_actual_proy = st.number_input("SMLMV Año Actual Base", value=SMLMV_ACTUAL_2026, step=100000.0)
             
             if opcion == "Cotizante Independiente":
-                st.info("💡 **Criterio Técnico:** Como independiente puro, asumes la totalidad del aporte. La inversión se calcula aplicando Salud (12.5%) y Pensión (16%) sobre el **100% del IBC deseado**, omitiendo la presunción del 40%.")
+                st.info("💡 **Independiente:** Inversión de Salud (12.5%) y Pensión (16%) sobre el **100% del IBC deseado** (Sin presunción del 40%).")
                 smlmv_deseados = st.number_input("IBC Deseado (En SMLMV)", min_value=1.0, max_value=25.0, value=5.0, step=0.5)
                 estrategia_texto = f"Independiente (IBC: {smlmv_deseados} SMLMV)"
                 
-                ibc_ref_ano_1 = smlmv_actual * smlmv_deseados
+                ibc_ref_ano_1 = smlmv_actual_proy * smlmv_deseados
                 costo_mes_ano_1 = ibc_ref_ano_1 * 0.285
-                
-                st.success(f"**Referencia Año 1:**\nIBC Total: ${ibc_ref_ano_1:,.0f}\nCosto Aporte Mensual: ${costo_mes_ano_1:,.0f}")
+                st.success(f"**Ref. Año 1:**\nIBC Total: ${ibc_ref_ano_1:,.0f}\nCosto Mensual: ${costo_mes_ano_1:,.0f}")
             
             else:
-                st.info("💡 **Criterio Técnico:** Como dependiente, tu empleador cotiza sobre tu salario base. El cálculo de inversión (28.5%) se aplicará **solo sobre el IBC extra** que aportes de tu bolsillo como independiente.")
-                ultimo_ibc = float(df['IBC'].iloc[-1]) if not df.empty else smlmv_actual
-                st.write(f"**IBC Actual como Dependiente:** ${ultimo_ibc:,.0f}")
+                st.info("💡 **Dependiente:** Inversión del 28.5% se aplica **solo sobre el IBC extra** (La base actual la asume el empleador).")
+                ultimo_ibc = float(df['IBC'].iloc[-1]) if not df.empty else smlmv_actual_proy
+                st.write(f"**IBC Base (Empleador):** ${ultimo_ibc:,.0f}")
                 
                 smlmv_extra = st.number_input("IBC Extra a aportar (En SMLMV)", min_value=1.0, max_value=25.0, value=2.0, step=0.5)
-                estrategia_texto = f"Dependiente + Extra Indep. ({smlmv_extra} SMLMV Adicionales)"
+                estrategia_texto = f"Dependiente + Extra Indep. ({smlmv_extra} SMLMV)"
                 
-                ibc_extra_ano_1 = smlmv_actual * smlmv_extra
+                ibc_extra_ano_1 = smlmv_actual_proy * smlmv_extra
                 costo_mes_ano_1 = ibc_extra_ano_1 * 0.285
-                
-                st.success(f"**Referencia Año 1:**\nIBC Extra (Inversión): ${ibc_extra_ano_1:,.0f}\nCosto Aporte Extra Mensual: ${costo_mes_ano_1:,.0f}")
+                st.success(f"**Ref. Año 1:**\nIBC Extra (Inv): ${ibc_extra_ano_1:,.0f}\nCosto Extra Mensual: ${costo_mes_ano_1:,.0f}")
 
             anios_proy = st.slider("Años a realizar el aporte", 1, 15, 5)
             incremento_anual_smlmv = st.number_input("Est. Aumento Anual SMLMV (%)", value=5.0, step=0.5) / 100.0
             
-            st.caption("📈 *Nota Metodológica: El sistema proyecta el SMLMV futuro aplicando la tasa de aumento anual estimada mediante un modelo de interés compuesto. Esto ajusta mes a mes el valor del IBC y del aporte, reflejando una inflación simulada para un escenario económico real.*")
+            st.caption("📈 *Proyección basada en interés compuesto para simular la inflación del SMLMV y el ajuste real de aportes año a año.*")
 
         with c_res:
             filas_fut = []
@@ -347,29 +462,22 @@ else:
             
             for m in range(anios_proy * 12):
                 year_offset = m // 12
-                # Interés compuesto para SMLMV
-                smlmv_periodo = smlmv_actual * ((1 + incremento_anual_smlmv) ** year_offset)
+                smlmv_periodo = smlmv_actual_proy * ((1 + incremento_anual_smlmv) ** year_offset)
                 
                 if opcion == "Cotizante Independiente":
                     ibc_periodo = smlmv_deseados * smlmv_periodo
-                    # Costo de inversión = aporte total
                     costo_mes = ibc_periodo * 0.285
                 else:
-                    # Dependiente: se actualiza su base salarial asumiendo que crece igual que el SMLMV
                     ibc_dependiente_periodo = ultimo_ibc * ((1 + incremento_anual_smlmv) ** year_offset)
                     ibc_extra_periodo = smlmv_extra * smlmv_periodo
                     ibc_periodo = ibc_dependiente_periodo + ibc_extra_periodo
-                    
-                    # Costo de inversión = SOLO el 28.5% sobre la parte extra (la base la paga el empleador)
                     costo_mes = ibc_extra_periodo * 0.285
                 
                 inversion_total += costo_mes
                 
                 filas_fut.append({
-                    "Desde": cur, 
-                    "Hasta": cur + timedelta(days=30), 
-                    "IBC": ibc_periodo, 
-                    "Semanas": 4.29
+                    "Desde": cur, "Hasta": cur + timedelta(days=30), 
+                    "IBC": ibc_periodo, "Semanas": 4.29
                 })
                 cur += timedelta(days=31)
             
@@ -399,6 +507,9 @@ else:
                 m3.error("Sin mejora")
                 
             st.caption(f"**Escenario aplicado para liquidación futura:** {origen_ibl_fut}")
+            
+            chart_proy = pd.DataFrame({"Mesada": [mesada, mes_f]}, index=["Situación Actual", "Con Proyección"])
+            st.bar_chart(chart_proy, color="#27AE60")
 
             t_d1, t_d2 = st.tabs(["📑 Detalle 10 Años (Proyectado)", "📑 Detalle Toda la Vida (Proyectado)"])
             with t_d1:
@@ -407,15 +518,9 @@ else:
                 st.dataframe(det_vida_fut.style.format({'IBC_Historico': "${:,.0f}", 'IBC_Actualizado': "${:,.0f}"}))
             
             proyeccion_data = {
-                "estrategia": estrategia_texto, 
-                "anios": anios_proy,
-                "inversion": inversion_total, 
-                "mesada_fut": mes_f, 
-                "delta": delta, 
-                "roi": roi,
-                "origen_ibl_fut": origen_ibl_fut,
-                "det_10_fut": det_10_fut,
-                "det_vida_fut": det_vida_fut
+                "estrategia": estrategia_texto, "anios": anios_proy, "inversion": inversion_total, 
+                "mesada_fut": mes_f, "delta": delta, "roi": roi,
+                "origen_ibl_fut": origen_ibl_fut, "det_10_fut": det_10_fut, "det_vida_fut": det_vida_fut
             }
 
     # --- BOTÓN WORD Y APROBACIÓN ---
@@ -427,11 +532,13 @@ else:
     liq_data = {
         "semanas": total_sem, "ibl": ibl_def, "origen_ibl": origen_ibl, 
         "tasa": tasa, "mesada": mesada, "ibl_10": ibl_10, "ibl_vida": ibl_vida,
+        "formula_tasa": formula_tasa,
         "df_soporte_10": det_10, "df_soporte_vida": det_vida 
     }
     perfil = {"nombre": nombre, "fecha_nac": fecha_nac.strftime('%d/%m/%Y')}
+    req_data = {"edad": edad_req, "semanas": semanas_req, "nota": nota_req}
     
-    docx = generar_reporte_completo(perfil, fechas_clave, liq_data, proyeccion_data if incluir_proyeccion else None)
+    docx = generar_reporte_completo(perfil, fechas_clave, liq_data, req_data, proyeccion_data if incluir_proyeccion else None)
     
     st.sidebar.download_button(
         label="📥 Descargar Dictamen Técnico (Word)", 
