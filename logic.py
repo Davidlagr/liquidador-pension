@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
-from utils import calcular_semanas_minimas_mujeres
 
 class LiquidadorPension:
     def __init__(self, historia_laboral, genero, fecha_nacimiento):
@@ -46,56 +45,61 @@ class LiquidadorPension:
     def determinar_fechas_clave(self):
         """
         Determina: Fecha Cumplimiento Edad, Fecha Cumplimiento Semanas,
-        Fecha Estatus y Fecha de Indexación (Corte).
+        Fecha Estatus y Fecha de Indexación (Corte), resolviendo dinámicamente
+        los requisitos exigidos por la Sentencia C-197/23.
         """
         # 1. FECHA EDAD
         req_edad = 62 if self.genero == "Masculino" else 57
         fecha_cumple_edad = self.fecha_nacimiento + relativedelta(years=req_edad)
         
-        # 2. FECHA SEMANAS (Iterar hasta encontrar la semana 1300/req)
-        # Requisito base
-        req_sem = 1300
-        if self.genero == "Femenino":
-            # Usamos el año actual para definir el requisito, o el año de cumplimiento edad si es menor
-            req_sem = calcular_semanas_minimas_mujeres(datetime.now().year)
-            
+        # 2. FECHA SEMANAS (Cálculo dinámico cronológico para romper referencia circular)
         df_sort = self.df.sort_values('Hasta')
         acumulado = 0
         fecha_cumple_semanas = None
         
         for _, row in df_sort.iterrows():
             acumulado += row['Semanas']
-            if acumulado >= req_sem:
-                fecha_cumple_semanas = row['Hasta']
+            current_date = row['Hasta']
+            
+            # Proyectar cuál sería el año de estatus si consolidara el derecho hoy
+            estatus_teorico = max(fecha_cumple_edad, current_date)
+            anio_estatus_teorico = estatus_teorico.year
+            
+            # Determinar el requisito específico para ese año proyectado
+            if self.genero == "Masculino":
+                req_sem_dinamico = 1300
+            else:
+                if anio_estatus_teorico < 2026:
+                    req_sem_dinamico = 1300
+                elif anio_estatus_teorico == 2026:
+                    req_sem_dinamico = 1250
+                else:
+                    descenso = 50 + ((anio_estatus_teorico - 2026) * 25)
+                    req_sem_dinamico = max(1000, 1300 - descenso)
+            
+            # Si el acumulado supera el umbral dinámico de esa fecha, ya cumplió
+            if acumulado >= req_sem_dinamico and fecha_cumple_semanas is None:
+                fecha_cumple_semanas = current_date
                 break
         
         # 3. ESTATUS JURÍDICO
-        tiene_estatus = (fecha_cumple_semanas is not None) and (acumulado >= req_sem)
+        tiene_estatus = (fecha_cumple_semanas is not None)
         fecha_estatus = None
         
         if tiene_estatus:
-            # El estatus se adquiere cuando se cumplen AMBOS requisitos (la fecha mayor)
+            # El estatus se adquiere cuando se cumplen AMBOS requisitos
             fecha_estatus = max(fecha_cumple_edad, fecha_cumple_semanas)
-            
-            # Si cumplió semanas antes de la edad, el estatus es la fecha de cumpleaños
-            # Si cumplió edad pero le faltaban semanas, el estatus es la fecha de la semana 1300
         
         # 4. FECHA DE CORTE (INDEXACIÓN) Y REGLAS
-        # Regla 1: Si no tiene estatus -> A la fecha de hoy (año de estudio)
-        # Regla 2: Si tiene estatus:
-        #    A. Si NO hay cotizaciones posteriores al estatus -> Fecha Estatus
-        #    B. Si HAY cotizaciones posteriores -> Fecha Última Cotización
-        
-        ultima_cotizacion = df_sort['Hasta'].max()
+        ultima_cotizacion = df_sort['Hasta'].max() if not df_sort.empty else self.fecha_actual
         razon_corte = ""
-        fecha_corte = datetime.now() # Default
+        fecha_corte = self.fecha_actual
         
         if not tiene_estatus:
-            fecha_corte = datetime.now()
+            fecha_corte = self.fecha_actual
             razon_corte = "Año de Estudio (No acredita estatus)"
         else:
-            # Verificar si hay cotizaciones posteriores a la fecha de estatus
-            # Damos un margen de 30 días para no contar el mismo mes
+            # Damos un margen de 30 días para no contar el mismo mes de estatus
             cotizaciones_posteriores = df_sort[df_sort['Hasta'] > (fecha_estatus + timedelta(days=30))]
             
             if cotizaciones_posteriores.empty:
@@ -122,15 +126,11 @@ class LiquidadorPension:
     def calcular_ibl_indexado(self, fecha_corte_personalizada=None, metodo="toda_vida"):
         if self.df.empty: return 0.0, pd.DataFrame()
         
-        # Si no mandan fecha, usamos hoy, pero idealmente se debe mandar la calculada
         f_corte = fecha_corte_personalizada if fecha_corte_personalizada else self.fecha_actual
-        
         df_calc = self.df.copy()
         
-        # Filtro Últimos 10 años (Desde la fecha de corte hacia atrás)
+        # Filtro Últimos 10 años (Desde la última cotización hacia atrás)
         if metodo == "ultimos_10":
-            # La norma dice últimos 10 años cotizados. 
-            # Tomamos la fecha fin del último registro válido y restamos 10 años.
             fecha_max_cot = df_calc['Hasta'].max()
             fecha_inicio_10 = fecha_max_cot - relativedelta(years=10)
             df_calc = df_calc[df_calc['Hasta'] >= fecha_inicio_10]
@@ -159,16 +159,23 @@ class LiquidadorPension:
         ibl = df_detalles['IBC_Actualizado'].mean()
         return ibl, df_detalles
 
-    def calcular_tasa_reemplazo_797(self, ibl, semanas, anio_pension, limitar_semanas_cotizadas=True):
-        smmlv = 1423500 
+    def calcular_tasa_reemplazo_797(self, ibl, semanas, anio_pension, limitar_semanas_cotizadas=True, smmlv=1750905.0):
         if ibl <= 0: return 0, 0, {}
         
-        r_inicial = 65.5 - (0.5 * (ibl / smmlv))
+        # Fórmula Tasa Base (Art 34 Ley 100)
+        s = ibl / smmlv
+        r_inicial = 65.5 - (0.5 * s)
+        
+        # Ajuste legal de la tasa base
+        if r_inicial < 55.0: r_inicial = 55.0
+        if r_inicial > 65.5: r_inicial = 65.5
         
         semanas_minimas = 1300
         if self.genero == 'Femenino':
-            if anio_pension < 2026: semanas_minimas = 1300
-            elif anio_pension == 2026: semanas_minimas = 1250
+            if anio_pension < 2026: 
+                semanas_minimas = 1300
+            elif anio_pension == 2026: 
+                semanas_minimas = 1250
             else:
                 diff = anio_pension - 2026
                 semanas_minimas = max(1000, 1250 - (25 * diff))
@@ -180,19 +187,27 @@ class LiquidadorPension:
         puntos_extra = 0
         semanas_extra = 0
         if semanas_computables > semanas_minimas:
+            # Aquí es donde la Sentencia impacta fuerte: Los bloques extra arrancan desde el nuevo mínimo
             semanas_extra = semanas_computables - semanas_minimas
             puntos_extra = int(semanas_extra / 50) * 1.5
             
         tasa = r_inicial + puntos_extra
+        
         if tasa > 80: tasa = 80
         if tasa < 0: tasa = 0
         
         mesada = ibl * (tasa / 100)
-        if mesada < smmlv: mesada = smmlv
-        if tasa < 0 and mesada == smmlv: tasa = (smmlv/ibl)*100
+        
+        # Garantía de pensión mínima
+        if mesada < smmlv: 
+            mesada = smmlv
+            
+        if tasa < 0 and mesada == smmlv: 
+            tasa = (smmlv/ibl) * 100
         
         detalle = {
             "semanas_usadas": semanas_computables,
-            "tasa_final": tasa
+            "tasa_final": tasa,
+            "semanas_minimas_exigidas": semanas_minimas
         }
         return mesada, tasa, detalle
