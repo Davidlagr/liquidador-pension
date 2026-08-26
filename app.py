@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import matplotlib.subplots as plt
 from datetime import date, datetime, timedelta
 from io import BytesIO
 from docx import Document
@@ -63,7 +63,6 @@ SMLMV_ACTUAL_2026 = 1750905.0
 # FUNCIONES AUXILIARES JURÍDICAS Y DE LIMPIEZA
 # ==========================================
 def limpiar_valor_ibc_robusto(val):
-    """Detecta y corrige el problema de los puntos como separadores de miles"""
     if pd.isna(val):
         return 0.0
     
@@ -71,18 +70,12 @@ def limpiar_valor_ibc_robusto(val):
     if not val_str or val_str.lower() in ['nan', 'none']:
         return 0.0
 
-    # Si tiene punto y coma (Ej: 1.300.000,50)
     if ',' in val_str and '.' in val_str:
         val_str = val_str.replace('.', '').replace(',', '.')
-    
-    # Si solo tiene puntos (Ej: 755.201 o 1.300.000)
     elif '.' in val_str:
         partes = val_str.split('.')
-        # Si la última parte tiene exactamente 3 dígitos, es un separador de miles
         if len(partes) > 1 and len(partes[-1]) == 3:
             val_str = ''.join(partes)
-            
-    # Si usa coma como decimal o como miles erróneo
     elif ',' in val_str:
         partes = val_str.split(',')
         if len(partes) > 1 and len(partes[-1]) == 3:
@@ -95,7 +88,11 @@ def limpiar_valor_ibc_robusto(val):
     except ValueError:
         return 0.0
 
-def get_requisitos_estatus(genero, fecha_estatus):
+def get_requisitos_estatus(genero, fecha_estatus, fecha_cumple_edad=None):
+    """
+    Calcula la edad y semanas exigidas aplicando la Sentencia C-197/23 para mujeres.
+    Incorpora lógica de proyección para quienes aún no consolidan el derecho.
+    """
     edad_req = 62 if genero == "Masculino" else 57
     
     if genero == "Masculino":
@@ -103,20 +100,35 @@ def get_requisitos_estatus(genero, fecha_estatus):
         nota = "Aplica regla general Ley 797/2003 (1300 semanas)."
     else:
         if pd.isna(fecha_estatus):
-            semanas_req = 1300
-            nota = "Aún no consolida estatus pensional. Aplica exigencia referencial de 1300 semanas."
-        else:
-            if pd.Timestamp(fecha_estatus) < pd.Timestamp('2026-01-01'):
-                semanas_req = 1300
-                nota = "Consolida estatus antes de 2026. Aplica exigencia de 1300 semanas."
+            # No ha consolidado estatus. Se proyecta a futuro (mínimo desde 2026).
+            anio_actual = datetime.now().year
+            anio_cumple = fecha_cumple_edad.year if fecha_cumple_edad else anio_actual
+            
+            # El año proyectado de cumplimiento será el más alto entre hoy y su fecha de cumpleaños
+            anio_proy = max(anio_actual, anio_cumple)
+            
+            if anio_proy < 2026:
+                anio_proy = 2026 # Si ya tiene la edad pero no las semanas, consolidará de 2026 en adelante.
+                
+            if anio_proy == 2026:
+                semanas_req = 1250
             else:
-                anio = fecha_estatus.year
+                descenso = 50 + ((anio_proy - 2026) * 25)
+                semanas_req = max(1000, 1300 - descenso)
+                
+            nota = f"Aún no consolida estatus. Se proyecta exigencia de {semanas_req} semanas para el año {anio_proy} acorde a Sentencia C-197/23."
+        else:
+            anio = fecha_estatus.year
+            if anio < 2026:
+                semanas_req = 1300
+                nota = f"Consolidó estatus en {anio} (antes de 2026). Aplica exigencia de 1300 semanas."
+            else:
                 if anio == 2026:
                     semanas_req = 1250
                 else:
                     descenso = 50 + ((anio - 2026) * 25)
                     semanas_req = max(1000, 1300 - descenso)
-                nota = f"Consolida estatus en {anio}. Aplica disminución progresiva constitucional."
+                nota = f"Consolidó estatus en {anio}. Aplica disminución progresiva constitucional: {semanas_req} semanas."
 
     return edad_req, semanas_req, nota
 
@@ -125,6 +137,7 @@ def desglosar_formula_tasa(ibl, semanas_totales, semanas_req, smlmv_ref):
     tasa_base = 65.5 - (0.5 * s)
     tasa_base = max(55.0, min(tasa_base, 65.5))
     
+    # El cálculo de semanas adicionales ahora es dinámico frente a semanas_req
     semanas_adicionales = max(0, semanas_totales - semanas_req)
     bloques_50 = int(semanas_adicionales // 50)
     incremento = bloques_50 * 1.5
@@ -145,13 +158,11 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None
     style.font.name = 'Arial'
     style.font.size = Pt(10)
 
-    # TÍTULO
     tit = doc.add_heading('DICTAMEN TÉCNICO PENSIONAL', 0)
     tit.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph(f"Fecha de Emisión: {datetime.now().strftime('%d/%m/%Y')}")
     doc.add_paragraph("_" * 70)
 
-    # 1. MARCO NORMATIVO
     doc.add_heading('1. MARCO NORMATIVO Y METODOLÓGICO', level=1)
     doc.add_paragraph(
         "El presente análisis técnico-jurídico se fundamenta en los parámetros de la Ley 100 de 1993 y las "
@@ -163,7 +174,6 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None
         "su estatus pensional a partir del 1° de enero de 2026."
     )
 
-    # 2. REQUISITOS DEL AFILIADO
     doc.add_heading('2. REQUISITOS PARA EL ESTATUS', level=1)
     t_req = doc.add_table(rows=1, cols=2)
     t_req.style = 'Table Grid'
@@ -171,7 +181,6 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None
         r = t_req.add_row().cells
         r[0].text, r[1].text = k, str(v)
 
-    # 3. ESTATUS
     doc.add_heading('3. CONSOLIDACIÓN DEL DERECHO', level=1)
     t_est = doc.add_table(rows=1, cols=2)
     t_est.style = 'Table Grid'
@@ -185,7 +194,6 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None
         r = t_est.add_row().cells
         r[0].text, r[1].text = k, str(v)
 
-    # 4. LIQUIDACIÓN ACTUAL Y GRÁFICAS
     doc.add_page_break()
     doc.add_heading('4. RESULTADO DE LA LIQUIDACIÓN ACTUAL', level=1)
     
@@ -206,7 +214,10 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None
     fig_ibl, ax_ibl = plt.subplots(figsize=(5, 3))
     ax_ibl.bar(["Últimos 10", "Toda Vida"], [liq_data['ibl_10'], liq_data['ibl_vida']], color=['#3498db', '#2ecc71'])
     ax_ibl.set_title("Comparativo Ingreso Base de Liquidación (IBL)")
-    ax_ibl.yaxis.set_major_formatter('${x:,.0f}')
+    import matplotlib.ticker as mtick
+    fmt = '${x:,.0f}'
+    tick = mtick.StrMethodFormatter(fmt)
+    ax_ibl.yaxis.set_major_formatter(tick)
     mem_ibl = BytesIO()
     fig_ibl.savefig(mem_ibl, format='png', bbox_inches='tight')
     doc.add_paragraph("\n")
@@ -214,7 +225,6 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None
     mem_ibl.close()
     plt.close(fig_ibl)
 
-    # Desglose Tasa
     doc.add_heading('4.1 FÓRMULA DE TASA DE REEMPLAZO', level=2)
     f_data = liq_data['formula_tasa']
     doc.add_paragraph(
@@ -246,7 +256,6 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None
     doc.add_heading('ANEXO 2: DETALLE TODA LA VIDA (ACTUAL)', level=1)
     agregar_tabla_soporte(liq_data['df_soporte_vida'])
 
-    # 5. PROYECCIÓN
     if proyeccion:
         doc.add_page_break()
         doc.add_heading('5. PROYECCIÓN ESTRATÉGICA DE MEJORA PENSIONAL', level=1)
@@ -266,11 +275,10 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None
             r = t3.add_row().cells
             r[0].text, r[1].text = k, str(v)
 
-        # Gráfica Proyección Mesada
         fig_p1, ax_p1 = plt.subplots(figsize=(5, 3))
         ax_p1.bar(["Actual", "Proyectada"], [liq_data['mesada'], proyeccion['mesada_fut']], color=['#e74c3c', '#27ae60'])
         ax_p1.set_title("Incremento de Mesada Pensional")
-        ax_p1.yaxis.set_major_formatter('${x:,.0f}')
+        ax_p1.yaxis.set_major_formatter(tick)
         mem_p1 = BytesIO()
         fig_p1.savefig(mem_p1, format='png', bbox_inches='tight')
         doc.add_paragraph("\n")
@@ -338,7 +346,6 @@ if st.session_state.df_final is None:
             cs = c4.selectbox("Semanas", cols, index=len(cols)-1)
             
             if st.button("Procesar"):
-                # INTERVENCIÓN DE LIMPIEZA ROBUSTA PARA EL IBC ANTES DE ESTANDARIZAR
                 df_procesar = df.copy()
                 df_procesar[ci] = df_procesar[ci].apply(limpiar_valor_ibc_robusto)
                 
@@ -361,13 +368,16 @@ else:
     origen_ibl = "Últimos 10 Años" if ibl_10 >= ibl_vida else "Toda la Vida"
     
     total_sem = df['Semanas'].sum()
+    
+    # Calcular requisitos normativos dinámicos (Se incluye fecha de cumpleaños para proyección)
+    edad_req, semanas_req, nota_req = get_requisitos_estatus(genero, fechas_clave['fecha_estatus'], fechas_clave['fecha_cumple_edad'])
+    
+    # Se genera la fórmula desglosada utilizando el umbral real exigido de semanas
+    formula_tasa = desglosar_formula_tasa(ibl_def, total_sem, semanas_req, SMLMV_ACTUAL_2026)
+    
     mesada, tasa, info = liq.calcular_tasa_reemplazo_797(
         ibl_def, total_sem, datetime.now().year, aplicar_tope
     )
-    
-    # Calcular requisitos normativos y fórmula para UI
-    edad_req, semanas_req, nota_req = get_requisitos_estatus(genero, fechas_clave['fecha_estatus'])
-    formula_tasa = desglosar_formula_tasa(ibl_def, total_sem, semanas_req, SMLMV_ACTUAL_2026)
 
     tab1, tab2 = st.tabs(["📊 DIAGNÓSTICO JURÍDICO", "📈 PROYECCIÓN DE MEJORA"])
     
@@ -375,7 +385,6 @@ else:
     with tab1:
         st.subheader(f"Dictamen de Estatus: {nombre}")
         
-        # Bloque de Requisitos Normativos
         st.markdown(f"""
         <div style='background-color: #f5eef8; padding: 10px; border-radius: 5px; border-left: 4px solid #8e44ad; margin-bottom: 15px;'>
             <b>📌 Requisitos Normativos para el Afiliado:</b><br>
@@ -414,7 +423,6 @@ else:
         c2.metric("Mesada Pensional", f"${mesada:,.0f}")
         c3.metric("Tasa Reemplazo Aplicada", f"{tasa:.2f}%")
 
-        # Desglose de la Fórmula Tasa Reemplazo
         with st.expander("📐 Ver fórmula de cálculo de la Tasa de Reemplazo"):
             st.markdown(f"""
             <div class='formula-box'>
