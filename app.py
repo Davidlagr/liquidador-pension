@@ -278,8 +278,22 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None
         mem_p1.close()
         plt.close(fig_p1)
         
-        # --- NUEVA SECCIÓN DE DESGLOSE FINANCIERO Y GRÁFICAS ---
-        doc.add_heading('5.1 DESGLOSE DE COSTOS Y PROYECCIÓN DE APORTES', level=2)
+        # --- NUEVA SECCIÓN: REQUISITOS Y FÓRMULA PROYECTADA ---
+        doc.add_heading('5.1 ANÁLISIS DE REQUISITOS Y FÓRMULA PROYECTADA', level=2)
+        f_data_fut = proyeccion['formula_tasa_fut']
+        doc.add_paragraph(
+            f"Al finalizar la proyección, el afiliado acumulará un total de {proyeccion['total_sem_fut']:,.2f} semanas.\n"
+            f"Condición normativa proyectada: {proyeccion['nota_req_fut']}\n\n"
+            "Desglose de la Fórmula Aplicada a Futuro:\n"
+            f"1. Cálculo SMLMV del IBL proyectado (s): {f_data_fut['s']:.2f} salarios mínimos.\n"
+            f"2. Tasa Base [65.5 - (0.5 * s)]: {f_data_fut['tasa_base']:.2f}%\n"
+            f"3. Semanas Adicionales ({proyeccion['total_sem_fut']:,.2f} totales - {proyeccion['semanas_req_fut']} exigidas): {f_data_fut['semanas_adicionales']:.2f}\n"
+            f"4. Bloques de 50 semanas: {f_data_fut['bloques']}\n"
+            f"5. Incremento en Tasa ({f_data_fut['bloques']} x 1.5%): +{f_data_fut['incremento']:.2f}%\n"
+            f"6. TASA FINAL (Tope Legal 80%): {f_data_fut['tasa_final']:.2f}%"
+        )
+        
+        doc.add_heading('5.2 DESGLOSE DE COSTOS Y PROYECCIÓN DE APORTES', level=2)
         doc.add_paragraph("A continuación, se detalla la evolución del Ingreso Base de Cotización (IBC) proyectado y el costo de los aportes (Salud + Pensión), indexados con la inflación estimada.")
         
         df_inv = pd.DataFrame(proyeccion['detalle_inversion'])
@@ -300,7 +314,6 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None
             row_cells[3].text = f"${row['Costo Mes']:,.0f}"
             row_cells[4].text = f"${row['Costo Anual']:,.0f}"
 
-        # Gráfico adicional para la proyección de costos
         fig_p2, ax_p2 = plt.subplots(figsize=(6, 3))
         ax_p2.plot(df_inv['Año'], df_inv['Costo Mes'], marker='o', linestyle='-', color='#8e44ad')
         ax_p2.set_title("Evolución del Costo Mensual de Aportes")
@@ -316,7 +329,7 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyeccion=None
         plt.close(fig_p2)
             
         doc.add_page_break()
-        doc.add_heading('5.2 SOPORTES: CÁLCULO DE LA MESADA FUTURA', level=2)
+        doc.add_heading('5.3 SOPORTES: CÁLCULO DE LA MESADA FUTURA', level=2)
         doc.add_paragraph(f"Escenario más favorable aplicado para el futuro: {proyeccion['origen_ibl_fut']}.")
         
         doc.add_heading('DETALLE PROYECCIÓN: ÚLTIMOS 10 AÑOS', level=3)
@@ -541,7 +554,6 @@ else:
                 
                 inversion_total += costo_mes
                 
-                # Guardar el desglose anual en el mes 1 de cada año de proyección
                 if m % 12 == 0:
                     detalle_inversion.append({
                         "Año": year_offset + 1,
@@ -570,6 +582,11 @@ else:
             
             mes_f, tasa_f, _ = liq_f.calcular_tasa_reemplazo_797(ibl_f, df_fut['Semanas'].sum(), datetime.now().year + anios_proy, aplicar_tope)
             
+            # --- NUEVOS CÁLCULOS PARA MOSTRAR LA FÓRMULA FUTURA ---
+            total_sem_fut = df_fut['Semanas'].sum()
+            edad_req_fut, semanas_req_fut, nota_req_fut = get_requisitos_estatus(genero, fechas_fut['fecha_estatus'], fechas_fut['fecha_cumple_edad'])
+            formula_tasa_fut = desglosar_formula_tasa(ibl_f, total_sem_fut, semanas_req_fut, SMLMV_ACTUAL_2026)
+
             delta = mes_f - mesada
             roi = (inversion_total / (delta * 12)) if delta > 0 else 0
             
@@ -587,7 +604,30 @@ else:
             chart_proy = pd.DataFrame({"Mesada": [mesada, mes_f]}, index=["Situación Actual", "Con Proyección"])
             st.bar_chart(chart_proy, color="#27AE60")
 
-            # --- NUEVO EXPANSOR EN LA INTERFAZ DE USUARIO ---
+            # --- NUEVA CAJA DE INFORMACIÓN DE SEMANAS Y FÓRMULA DECRECIENTE ---
+            st.markdown(f"""
+            <div style='background-color: #f5eef8; padding: 10px; border-radius: 5px; border-left: 4px solid #8e44ad; margin-bottom: 15px;'>
+                <b>📌 Requisitos y Semanas Proyectadas:</b><br>
+                Semanas Totales Acumuladas: <b>{total_sem_fut:,.2f}</b><br>
+                Semanas Mínimas Exigidas: <b>{semanas_req_fut}</b><br>
+                <i>{nota_req_fut}</i>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            with st.expander("📐 Ver fórmula de cálculo de la Tasa de Reemplazo Proyectada"):
+                st.markdown(f"""
+                <div class='formula-box'>
+                    <strong>1. Cálculo Base (Art. 34 Ley 100):</strong><br>
+                    • SMLMV del IBL proyectado (s): {formula_tasa_fut['s']:.2f} salarios<br>
+                    • Tasa Base [65.5 - (0.5 * s)]: <b>{formula_tasa_fut['tasa_base']:.2f}%</b><br><br>
+                    <strong>2. Incremento por Semanas Adicionales:</strong><br>
+                    • Semanas Adicionales ({total_sem_fut:,.2f} totales - {semanas_req_fut} exigidas): {formula_tasa_fut['semanas_adicionales']:.2f}<br>
+                    • Bloques de 50 semanas: {formula_tasa_fut['bloques']}<br>
+                    • Incremento ({formula_tasa_fut['bloques']} x 1.5%): <b>+{formula_tasa_fut['incremento']:.2f}%</b><br><br>
+                    <strong>3. Tasa Final (Tope 80%): <b>{formula_tasa_fut['tasa_final']:.2f}%</b></strong>
+                </div>
+                """, unsafe_allow_html=True)
+
             with st.expander("💸 Ver Desglose Anual de Costos de Inversión"):
                 df_inv_ui = pd.DataFrame(detalle_inversion)
                 st.dataframe(df_inv_ui.style.format({
@@ -607,7 +647,11 @@ else:
                 "estrategia": estrategia_texto, "anios": anios_proy, "inversion": inversion_total, 
                 "mesada_fut": mes_f, "delta": delta, "roi": roi,
                 "origen_ibl_fut": origen_ibl_fut, "det_10_fut": det_10_fut, "det_vida_fut": det_vida_fut,
-                "detalle_inversion": detalle_inversion
+                "detalle_inversion": detalle_inversion,
+                "total_sem_fut": total_sem_fut,
+                "semanas_req_fut": semanas_req_fut,
+                "nota_req_fut": nota_req_fut,
+                "formula_tasa_fut": formula_tasa_fut
             }
 
     # --- BOTÓN WORD Y APROBACIÓN ---
