@@ -261,6 +261,12 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyecciones=No
         doc.add_heading('5. PROYECCIÓN ESTRATÉGICA DE MEJORA PENSIONAL (3 ESCENARIOS)', level=1)
         doc.add_paragraph("Esquema de viabilidad financiera liquidando salud (12.5%) y pensión (16%). El sistema proyecta el SMLMV futuro aplicando la tasa de aumento anual estimada.")
         
+        # --- NOTA ACLARATORIA ---
+        p_nota = doc.add_paragraph()
+        r_nota_title = p_nota.add_run("NOTA ACLARATORIA: ")
+        r_nota_title.bold = True
+        p_nota.add_run("El costo de la cotización mensual proyectada se calcula tomando como base el 100% del Ingreso Base de Cotización (IBC) deseado, y no sobre la presunción de ingresos del 40%, garantizando así el aporte pleno requerido para alcanzar el objetivo pensional trazado en la simulación.")
+
         # Comparativo Gráfico de los 3 escenarios
         fig_p1, ax_p1 = plt.subplots(figsize=(7, 4))
         nombres = ["Actual"] + [f"Esc. {i+1}\n({p['smlmv_input']} SM)" for i, p in enumerate(proyecciones)]
@@ -279,6 +285,7 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyecciones=No
 
         # Imprimir tablas detalladas para cada escenario
         for idx, p in enumerate(proyecciones):
+            doc.add_page_break()
             doc.add_heading(f'5.{idx+1} ESCENARIO {idx+1}: {p["smlmv_input"]} SMLMV', level=2)
             
             t3 = doc.add_table(rows=1, cols=2)
@@ -293,10 +300,41 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyecciones=No
             ]:
                 r = t3.add_row().cells
                 r[0].text, r[1].text = k, str(v)
-                aplicar_color_celda(r[0], "FDF2E9") # Color naranja tenue
+                aplicar_color_celda(r[0], "FDF2E9")
                 
             f_data_fut = p['formula_tasa_fut']
-            doc.add_paragraph(f"\nSemanas Totales: {p['total_sem_fut']:,.2f} | Tasa Final: {f_data_fut['tasa_final']:.2f}% | Condición: {p['nota_req_fut']}")
+            doc.add_paragraph(f"\nSemanas Totales Acumuladas: {p['total_sem_fut']:,.2f} | Tasa Final Aplicada: {f_data_fut['tasa_final']:.2f}%")
+            doc.add_paragraph(f"Condición de Estatus: {p['nota_req_fut']}\n")
+
+            # --- DESGLOSE DE COSTOS (Inversión Anual) ---
+            doc.add_heading(f'DESGLOSE DE COSTOS Y APORTES - ESCENARIO {idx+1}', level=3)
+            df_inv = pd.DataFrame(p['detalle_inversion'])
+            t4 = doc.add_table(rows=1, cols=5)
+            t4.style = 'Table Grid'
+            hdr_cells = t4.rows[0].cells
+            for i, text in enumerate(['Año Proy.', 'SMLMV Est.', 'IBC Mensual', 'Aporte Mensual', 'Costo Anual']):
+                hdr_cells[i].text = text
+                aplicar_color_celda(hdr_cells[i], "D5DBDB")
+            
+            for _, row in df_inv.iterrows():
+                row_cells = t4.add_row().cells
+                row_cells[0].text = str(int(row['Año']))
+                row_cells[1].text = f"${row['SMLMV Proyectado']:,.0f}"
+                row_cells[2].text = f"${row['IBC Mes']:,.0f}"
+                row_cells[3].text = f"${row['Costo Mes']:,.0f}"
+                row_cells[4].text = f"${row['Costo Anual']:,.0f}"
+            
+            doc.add_paragraph("\n")
+            
+            # --- SOPORTES DE CÁLCULO IBL PROYECTADO ---
+            doc.add_heading(f'SOPORTES DE CÁLCULO (IBL) - ESCENARIO {idx+1}', level=3)
+            doc.add_paragraph(f"Escenario más favorable aplicado automáticamente: {p['origen_ibl_fut']}.")
+            
+            doc.add_heading('DETALLE ÚLTIMOS 10 AÑOS (PROYECTADO)', level=4)
+            agregar_tabla_soporte(p['det_10_fut'])
+
+            doc.add_heading('DETALLE TODA LA VIDA (PROYECTADO)', level=4)
+            agregar_tabla_soporte(p['det_vida_fut'])
 
     buffer = BytesIO()
     doc.save(buffer)
