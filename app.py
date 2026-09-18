@@ -369,16 +369,31 @@ with st.sidebar:
 # ==========================================
 if st.session_state.df_final is None:
     st.info("📂 Carga el PDF de Historia Laboral")
+    
+    # --- NUEVA FUNCIONALIDAD: Selección de Fondo ---
+    fondo_seleccionado = st.radio(
+        "📌 Seleccione el origen de la Historia Laboral:",
+        ["Colpensiones", "Porvenir (Otros Fondos)"],
+        horizontal=True
+    )
+    # ----------------------------------------------
+    
     uploaded_file = st.file_uploader("Archivo PDF", type="pdf")
 
     if uploaded_file:
         if st.session_state.df_crudo is None:
-            st.session_state.df_crudo = extraer_tabla_cruda(uploaded_file)
+            # --- NUEVA FUNCIONALIDAD: Extracción según fondo ---
+            if fondo_seleccionado == "Colpensiones":
+                st.session_state.df_crudo = extraer_tabla_cruda(uploaded_file)
+            else:
+                st.session_state.df_crudo = extraer_tabla_porvenir(uploaded_file)
+            # ---------------------------------------------------
         
         df = st.session_state.df_crudo
         if df is not None and not df.empty:
             st.dataframe(df.head(3))
             cols = df.columns.tolist()
+            # Los índices por defecto encajarán perfectamente con las 6 columnas simuladas
             c1, c2, c3, c4 = st.columns(4)
             cd = c1.selectbox("Desde", cols, index=2 if len(cols)>2 else 0)
             ch = c2.selectbox("Hasta", cols, index=3 if len(cols)>3 else 0)
