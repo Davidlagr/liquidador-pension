@@ -9,7 +9,7 @@ from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
-from data_processor import extraer_tabla_cruda, limpiar_y_estandarizar, aplicar_regla_simultaneidad
+from data_processor import extraer_tabla_cruda, extraer_tabla_porvenir, limpiar_y_estandarizar, aplicar_regla_simultaneidad
 from logic import LiquidadorPension
 
 # ==========================================
