@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import date, datetime, timedelta
+from dateutil.relativedelta import relativedelta
 from io import BytesIO
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
@@ -261,13 +262,11 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyecciones=No
         doc.add_heading('5. PROYECCIÓN ESTRATÉGICA DE MEJORA PENSIONAL (3 ESCENARIOS)', level=1)
         doc.add_paragraph("Esquema de viabilidad financiera liquidando salud (12.5%) y pensión (16%). El sistema proyecta el SMLMV futuro aplicando la tasa de aumento anual estimada.")
         
-        # --- NOTA ACLARATORIA ---
         p_nota = doc.add_paragraph()
         r_nota_title = p_nota.add_run("NOTA ACLARATORIA: ")
         r_nota_title.bold = True
         p_nota.add_run("El costo de la cotización mensual proyectada se calcula tomando como base el 100% del Ingreso Base de Cotización (IBC) deseado, y no sobre la presunción de ingresos del 40%, garantizando así el aporte pleno requerido para alcanzar el objetivo pensional trazado en la simulación.")
 
-        # Comparativo Gráfico de los 3 escenarios
         fig_p1, ax_p1 = plt.subplots(figsize=(7, 4))
         nombres = ["Actual"] + [f"Esc. {i+1}\n({p['smlmv_input']} SM)" for i, p in enumerate(proyecciones)]
         valores = [liq_data['mesada']] + [p['mesada_fut'] for p in proyecciones]
@@ -283,7 +282,6 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyecciones=No
         mem_p1.close()
         plt.close(fig_p1)
 
-        # Imprimir tablas detalladas para cada escenario
         for idx, p in enumerate(proyecciones):
             doc.add_page_break()
             doc.add_heading(f'5.{idx+1} ESCENARIO {idx+1}: {p["smlmv_input"]} SMLMV', level=2)
@@ -306,7 +304,6 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyecciones=No
             doc.add_paragraph(f"\nSemanas Totales Acumuladas: {p['total_sem_fut']:,.2f} | Tasa Final Aplicada: {f_data_fut['tasa_final']:.2f}%")
             doc.add_paragraph(f"Condición de Estatus: {p['nota_req_fut']}\n")
 
-            # --- DESGLOSE DE COSTOS (Inversión Anual) ---
             doc.add_heading(f'DESGLOSE DE COSTOS Y APORTES - ESCENARIO {idx+1}', level=3)
             df_inv = pd.DataFrame(p['detalle_inversion'])
             t4 = doc.add_table(rows=1, cols=5)
@@ -325,8 +322,6 @@ def generar_reporte_completo(perfil, fechas, liq_data, req_data, proyecciones=No
                 row_cells[4].text = f"${row['Costo Anual']:,.0f}"
             
             doc.add_paragraph("\n")
-            
-            # --- SOPORTES DE CÁLCULO IBL PROYECTADO ---
             doc.add_heading(f'SOPORTES DE CÁLCULO (IBL) - ESCENARIO {idx+1}', level=3)
             doc.add_paragraph(f"Escenario más favorable aplicado automáticamente: {p['origen_ibl_fut']}.")
             
@@ -370,30 +365,25 @@ with st.sidebar:
 if st.session_state.df_final is None:
     st.info("📂 Carga el PDF de Historia Laboral")
     
-    # --- NUEVA FUNCIONALIDAD: Selección de Fondo ---
     fondo_seleccionado = st.radio(
         "📌 Seleccione el origen de la Historia Laboral:",
         ["Colpensiones", "Porvenir (Otros Fondos)"],
         horizontal=True
     )
-    # ----------------------------------------------
     
     uploaded_file = st.file_uploader("Archivo PDF", type="pdf")
 
     if uploaded_file:
         if st.session_state.df_crudo is None:
-            # --- NUEVA FUNCIONALIDAD: Extracción según fondo ---
             if fondo_seleccionado == "Colpensiones":
                 st.session_state.df_crudo = extraer_tabla_cruda(uploaded_file)
             else:
                 st.session_state.df_crudo = extraer_tabla_porvenir(uploaded_file)
-            # ---------------------------------------------------
         
         df = st.session_state.df_crudo
         if df is not None and not df.empty:
             st.dataframe(df.head(3))
             cols = df.columns.tolist()
-            # Los índices por defecto encajarán perfectamente con las 6 columnas simuladas
             c1, c2, c3, c4 = st.columns(4)
             cd = c1.selectbox("Desde", cols, index=2 if len(cols)>2 else 0)
             ch = c2.selectbox("Hasta", cols, index=3 if len(cols)>3 else 0)
@@ -517,7 +507,6 @@ else:
         
         ultimo_ibc = float(df['IBC'].iloc[-1]) if not df.empty else smlmv_actual_proy
 
-        # --- NUEVA OPCIÓN DE TEMPORALIDAD Y VENTANA DE APORTE ---
         st.markdown("#### ⏳ Configuración de la Ventana Temporal de Aporte")
         modo_temporalidad = st.radio(
             "Seleccione cuándo desea realizar los aportes de mejora:",
@@ -543,21 +532,16 @@ else:
         escenarios_deseados = [smlmv_esc1, smlmv_esc2, smlmv_esc3]
         lista_proyecciones = []
 
-        # Determinar fecha de referencia para el estatus pensional según diagnóstico
         fecha_ref_estatus = fechas_clave['fecha_estatus'] if fechas_clave['tiene_estatus'] else fechas_clave['fecha_cumple_edad']
         if pd.isna(fecha_ref_estatus):
             fecha_ref_estatus = datetime.now() + relativedelta(years=anios_proy)
 
-        # --- FUNCIÓN INTERNA PARA CALCULAR CADA ESCENARIO CON PROYECCIÓN REAL ---
         def calcular_escenario(smlmv_val):
             filas_fut = []
             fecha_ultima_hist = df['Hasta'].max() if not df.empty else datetime.now()
             
-            # Definir la fecha de inicio según la temporalidad seleccionada
             if "Diferida" in modo_temporalidad:
-                # Proyecta exactamente en el bloque de los últimos 'anios_proy' antes de cumplir el estatus
                 fecha_inicio_proy = fecha_ref_estatus - relativedelta(years=anios_proy)
-                # Si la fecha calculada queda en el pasado (o muy cerca), arranca desde la última cotización
                 if fecha_inicio_proy < fecha_ultima_hist + timedelta(days=1):
                     fecha_inicio_proy = fecha_ultima_hist + timedelta(days=1)
             else:
@@ -570,12 +554,10 @@ else:
             
             for m in range(anios_proy * 12):
                 mes_actual_proy = cur + relativedelta(months=0)
-                # Desfase real en años desde el año actual para indexar correctamente el SMLMV futuro
                 year_offset_real = mes_actual_proy.year - anio_base_actual
                 if year_offset_real < 0: 
                     year_offset_real = 0
                 
-                # SMLMV proyectado acorde al año real en que ocurre el aporte
                 smlmv_periodo = smlmv_actual_proy * ((1 + incremento_anual_smlmv) ** year_offset_real)
                 
                 if opcion == "Cotizante Independiente":
@@ -626,7 +608,6 @@ else:
                 "semanas_req_fut": semanas_req_fut, "nota_req_fut": nota_req_fut, "formula_tasa_fut": formula_tasa_fut
             }
 
-        # Ejecutar la proyección para cada escenario configurado
         for val in escenarios_deseados:
             lista_proyecciones.append(calcular_escenario(val))
 
@@ -653,7 +634,7 @@ else:
             "Mesada": [mesada, lista_proyecciones[0]['mesada_fut'], lista_proyecciones[1]['mesada_fut'], lista_proyecciones[2]['mesada_fut']]
         }, index=["Actual", "Esc. 1", "Esc. 2", "Esc. 3"])
         st.bar_chart(chart_proy, color="#3498DB")
-    # --- BOTÓN WORD Y APROBACIÓN ---
+
     st.sidebar.markdown("---")
     st.sidebar.subheader("📄 Generación de Informe")
     
@@ -668,7 +649,6 @@ else:
     perfil = {"nombre": nombre, "fecha_nac": fecha_nac.strftime('%d/%m/%Y')}
     req_data = {"edad": edad_req, "semanas": semanas_req, "nota": nota_req}
     
-    # Pasamos la lista completa de proyecciones si el checkbox está activo
     docx = generar_reporte_completo(perfil, fechas_clave, liq_data, req_data, lista_proyecciones if incluir_proyeccion else None)
     
     st.sidebar.download_button(
