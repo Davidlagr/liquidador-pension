@@ -517,6 +517,17 @@ else:
         
         ultimo_ibc = float(df['IBC'].iloc[-1]) if not df.empty else smlmv_actual_proy
 
+        # --- NUEVA OPCIÓN DE TEMPORALIDAD Y VENTANA DE APORTE ---
+        st.markdown("#### ⏳ Configuración de la Ventana Temporal de Aporte")
+        modo_temporalidad = st.radio(
+            "Seleccione cuándo desea realizar los aportes de mejora:",
+            [
+                "Inmediata (Continuos a partir de la última cotización histórica)",
+                "Diferida en los últimos años previos al estatus pensional (Ventana final)"
+            ],
+            horizontal=False
+        )
+
         col_g1, col_g2 = st.columns(2)
         with col_g1:
             anios_proy = st.slider("Años a realizar el aporte", 1, 15, 5)
@@ -532,23 +543,47 @@ else:
         escenarios_deseados = [smlmv_esc1, smlmv_esc2, smlmv_esc3]
         lista_proyecciones = []
 
-        # --- FUNCIÓN INTERNA PARA CALCULAR CADA ESCENARIO SIN REPETIR CÓDIGO ---
+        # Determinar fecha de referencia para el estatus pensional según diagnóstico
+        fecha_ref_estatus = fechas_clave['fecha_estatus'] if fechas_clave['tiene_estatus'] else fechas_clave['fecha_cumple_edad']
+        if pd.isna(fecha_ref_estatus):
+            fecha_ref_estatus = datetime.now() + relativedelta(years=anios_proy)
+
+        # --- FUNCIÓN INTERNA PARA CALCULAR CADA ESCENARIO CON PROYECCIÓN REAL ---
         def calcular_escenario(smlmv_val):
             filas_fut = []
-            cur = df['Hasta'].max() + timedelta(days=1)
+            fecha_ultima_hist = df['Hasta'].max() if not df.empty else datetime.now()
+            
+            # Definir la fecha de inicio según la temporalidad seleccionada
+            if "Diferida" in modo_temporalidad:
+                # Proyecta exactamente en el bloque de los últimos 'anios_proy' antes de cumplir el estatus
+                fecha_inicio_proy = fecha_ref_estatus - relativedelta(years=anios_proy)
+                # Si la fecha calculada queda en el pasado (o muy cerca), arranca desde la última cotización
+                if fecha_inicio_proy < fecha_ultima_hist + timedelta(days=1):
+                    fecha_inicio_proy = fecha_ultima_hist + timedelta(days=1)
+            else:
+                fecha_inicio_proy = fecha_ultima_hist + timedelta(days=1)
+                
+            cur = fecha_inicio_proy
             inversion_total = 0
             detalle_inversion = []
+            anio_base_actual = datetime.now().year
             
             for m in range(anios_proy * 12):
-                year_offset = m // 12
-                smlmv_periodo = smlmv_actual_proy * ((1 + incremento_anual_smlmv) ** year_offset)
+                mes_actual_proy = cur + relativedelta(months=0)
+                # Desfase real en años desde el año actual para indexar correctamente el SMLMV futuro
+                year_offset_real = mes_actual_proy.year - anio_base_actual
+                if year_offset_real < 0: 
+                    year_offset_real = 0
+                
+                # SMLMV proyectado acorde al año real en que ocurre el aporte
+                smlmv_periodo = smlmv_actual_proy * ((1 + incremento_anual_smlmv) ** year_offset_real)
                 
                 if opcion == "Cotizante Independiente":
                     ibc_periodo = smlmv_val * smlmv_periodo
                     costo_mes = ibc_periodo * 0.285
                     estrategia_texto = f"Independiente ({smlmv_val} SM)"
                 else:
-                    ibc_dependiente_periodo = ultimo_ibc * ((1 + incremento_anual_smlmv) ** year_offset)
+                    ibc_dependiente_periodo = ultimo_ibc * ((1 + incremento_anual_smlmv) ** year_offset_real)
                     ibc_extra_periodo = smlmv_val * smlmv_periodo
                     ibc_periodo = ibc_dependiente_periodo + ibc_extra_periodo
                     costo_mes = ibc_extra_periodo * 0.285
@@ -557,7 +592,7 @@ else:
                 inversion_total += costo_mes
                 if m % 12 == 0:
                     detalle_inversion.append({
-                        "Año": year_offset + 1, "SMLMV Proyectado": smlmv_periodo,
+                        "Año": mes_actual_proy.year, "SMLMV Proyectado": smlmv_periodo,
                         "IBC Mes": ibc_periodo, "Costo Mes": costo_mes, "Costo Anual": costo_mes * 12
                     })
 
@@ -591,14 +626,13 @@ else:
                 "semanas_req_fut": semanas_req_fut, "nota_req_fut": nota_req_fut, "formula_tasa_fut": formula_tasa_fut
             }
 
-        # Ejecutamos la proyección para los 3 escenarios
+        # Ejecutar la proyección para cada escenario configurado
         for val in escenarios_deseados:
             lista_proyecciones.append(calcular_escenario(val))
 
         st.divider()
-        st.markdown("### 📊 Resultados Comparativos")
+        st.markdown("### 📊 Resultados Comparativos de Inversión")
         
-        # Mapeo visual en columnas de los 3 escenarios
         cols_res = st.columns(3)
         for i, proy in enumerate(lista_proyecciones):
             with cols_res[i]:
@@ -619,7 +653,6 @@ else:
             "Mesada": [mesada, lista_proyecciones[0]['mesada_fut'], lista_proyecciones[1]['mesada_fut'], lista_proyecciones[2]['mesada_fut']]
         }, index=["Actual", "Esc. 1", "Esc. 2", "Esc. 3"])
         st.bar_chart(chart_proy, color="#3498DB")
-
     # --- BOTÓN WORD Y APROBACIÓN ---
     st.sidebar.markdown("---")
     st.sidebar.subheader("📄 Generación de Informe")
